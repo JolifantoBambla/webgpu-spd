@@ -562,8 +562,73 @@ fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> v
 }
 `;
 
+const SUPPORTED_FORMATS: Array<string> = [
+    'rgba8unorm',
+    'rgba8snorm',
+    'rgba8uint',
+    'rgba8sint',
+    'bgra8unorm', // if bgra8unorm-storage is enabled
+    'rgba16uint',
+    'rgba16sint',
+    'rgba16float',
+    'r32uint',
+    'r32sint',
+    'r32float',
+    'rg32uint',
+    'rg32sint',
+    'rg32float',
+    'rgba32uint',
+    'rgba32sint',
+    'rgba32float',
+];
+
+export enum SPDFilters {
+    Average = "average",
+    Min = "min",
+    Max = "max",
+    MinMax = "minmax",
+}
+
+
+
+class DownsamplingPass {
+    private pipeline: GpuComputePipeline;
+    private bindGroups: Array<GpuBindGroup>;
+    private dispatchDimension: number;
+
+    encode(computePass: GpuComputePass) {
+        computePass.setPipeline(this.pipeline);
+        this.bindGroups.forEach((bindGroup, index) => {
+            computePass.setBindGroup(index, bindGroup);
+        });
+        computePass.dispatchWorkgroups(this.dispatchDimension);
+    }
+}
+
 export class GPUSinglePassDownsampler {
-    constructor() {}
+    private filters: Map<string, string>;
+    //private something: WeakMap<GpuDevice, >;
+
+    constructor() {
+        this.filters = new Map();
+        this.filters.set(SPDFilters.Average, spdFilterAverage);
+        this.filters.set(SPDFilters.Min, spdFilterMin);
+        this.filters.set(SPDFilters.Max, spdFilterMax);
+        this.filters.set(SPDFilters.MinMax, spdFilterMinMax);
+
+
+    }
+
+    registerFilter(name: string, wgsl: string) {
+        if (this.filters.has(name)) {
+            console.warn(`[GPUSinglePassDownsampler::registerFilter]: overriding existing filter '${name}'. Previously generated pipelines are not affected.`);
+        }
+        this.filters.set(string, wgsl);
+    }
+
+    //prepare(): DownsamplingPass {
+    //    return new DownsamplingPass();
+    //}
 
     static foo() {
         console.log(makeShaderCode('rgba8unorm'));
