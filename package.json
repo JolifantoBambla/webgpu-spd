@@ -1,0 +1,27 @@
+{
+  "name": "gpu-spd",
+  "version": "1.0.0",
+  "description": "A port of AMD's single-pass downsampling for WebGPU",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "/dist"
+  ],
+  "scripts": {
+    "test": "test",
+    "build": "tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JolifantoBambla/gpu-spd-js.git"
+  },
+  "keywords": [
+    "WebGPU"
+  ],
+  "author": "Lukas Herzberger",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/JolifantoBambla/gpu-spd-js/issues"
+  },
+  "homepage": "https://github.com/JolifantoBambla/gpu-spd-js#readme"
+}
