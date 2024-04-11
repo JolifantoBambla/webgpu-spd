@@ -601,10 +601,13 @@ class DownsamplingPassInner {
 }
 
 export class DownsamplingPass {
-    constructor(private passes: Array<DownsamplingPassInner>) {}
+    constructor(private passes: Array<DownsamplingPassInner>, private target: GPUTexture) {}
     encode(computePass: GPUComputePassEncoder): GPUComputePassEncoder {
         this.passes.forEach(p => p.encode(computePass));
         return computePass;
+    }
+    get target(): GPUTexture {
+        return this.target;
     }
 }
 
@@ -628,8 +631,15 @@ export class GPUSinglePassDownsampler {
         this.filters.set(SPDFilters.MinMax, SPD_FILTER_MINMAX);
     }
 
-    /*
     private getOrCreatePipelines(device: GPUDevice, targetFormat: GPUTextureFormat, filter: string, numMips: number): GPUComputePipeline {
+        if (!this.filters.has(filter)) {
+            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: unknown filter ${filter}, falling back to average`);
+        }
+        if (filter === SPD_FILTER_MINMAX && targetFormat.contains('r32')) {
+            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: filter ${filter} makes no sense for one-component target format ${targetFormat}`);
+        }
+        const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
+        const shaderCode = makeShaderCode(targetFormat, filterCode);
 
         return device.createComputePipeline({
             compute: {
@@ -639,7 +649,6 @@ export class GPUSinglePassDownsampler {
             layout: {}
         });
     }
-    */
 
     /**
      * Registers a new downsampling filter operation that can be injected into the downsampling shader for new pipelines.
