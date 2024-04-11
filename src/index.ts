@@ -1,4 +1,4 @@
-function makeShaderCode(outputFormat: string, filterOp: string = spdFilterAverage): string {
+function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE): string {
     return `
     // This file is part of the FidelityFX SDK.
 //
@@ -537,25 +537,25 @@ fn downsample_second_6(@builtin(local_invocation_index) local_invocation_index: 
     `;
 }
 
-const spdFilterAverage: string = `
+const SPD_FILTER_AVERAGE: string = `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return (v0 + v1 + v2 + v3) * 0.25;
 }
 `;
 
-const spdFilterMin = `
+const SPD_FILTER_MIN = `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return min(min(v0, v1), min(v2, v3));
 }
 `;
 
-const spdFilterMax = `
+const SPD_FILTER_MAX = `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return max(max(v0, v1), max(v2, v3));
 }
 `;
 
-const spdFilterMinMax = `
+const SPD_FILTER_MINMAX = `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     let max4 = max(max(v0.xy, v1.xy), max(v2.xy, v3.xy));
     return vec4<f32>(min(min(v0.x, v1.x), min(v2.x, v3.x)), max(max4.x, max4.y), 0, 0);
@@ -589,14 +589,9 @@ export enum SPDFilters {
     MinMax = "minmax",
 }
 
-
-
-class DownsamplingPass {
-    private pipeline: GpuComputePipeline;
-    private bindGroups: Array<GpuBindGroup>;
-    private dispatchDimension: number;
-
-    encode(computePass: GpuComputePass) {
+class DownsamplingPassInner {
+    constructor(private pipeline: GPUComputePipeline, private bindGroups: Array<GPUBindGroup>, private dispatchDimension: number) {}
+    encode(computePass: GPUComputePassEncoder) {
         computePass.setPipeline(this.pipeline);
         this.bindGroups.forEach((bindGroup, index) => {
             computePass.setBindGroup(index, bindGroup);
@@ -605,30 +600,75 @@ class DownsamplingPass {
     }
 }
 
+export class DownsamplingPass {
+    constructor(private passes: Array<DownsamplingPassInner>) {}
+    encode(computePass: GPUComputePassEncoder): GPUComputePassEncoder {
+        this.passes.forEach(p => p.encode(computePass));
+        return computePass;
+    }
+}
+
+export interface GPUDownsamplingPassConfig {
+    filter?: string,
+    target?: GPUTexture,
+    offset?: [number, number],
+    size?: [number, number],
+    numMips?: number,
+}
+
 export class GPUSinglePassDownsampler {
     private filters: Map<string, string>;
     //private something: WeakMap<GpuDevice, >;
 
     constructor() {
         this.filters = new Map();
-        this.filters.set(SPDFilters.Average, spdFilterAverage);
-        this.filters.set(SPDFilters.Min, spdFilterMin);
-        this.filters.set(SPDFilters.Max, spdFilterMax);
-        this.filters.set(SPDFilters.MinMax, spdFilterMinMax);
-
-
+        this.filters.set(SPDFilters.Average, SPD_FILTER_AVERAGE);
+        this.filters.set(SPDFilters.Min, SPD_FILTER_MIN);
+        this.filters.set(SPDFilters.Max, SPD_FILTER_MAX);
+        this.filters.set(SPDFilters.MinMax, SPD_FILTER_MINMAX);
     }
 
+    /*
+    private getOrCreatePipelines(device: GPUDevice, targetFormat: GPUTextureFormat, filter: string, numMips: number): GPUComputePipeline {
+
+        return device.createComputePipeline({
+            compute: {
+                module: undefined,
+                entryPoint: '',
+            },
+            layout: {}
+        });
+    }
+    */
+
+    /**
+     * Registers a new downsampling filter operation that can be injected into the downsampling shader for new pipelines.
+     * 
+     * The given WGSL code must (at least) specify a function to reduce four values into one with the following name and signature:
+     * 
+     *   spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32>
+     * 
+     * @param name the unique name of the filter operation
+     * @param wgsl the WGSL code to inject into the downsampling shader as the filter operation
+     */
     registerFilter(name: string, wgsl: string) {
         if (this.filters.has(name)) {
             console.warn(`[GPUSinglePassDownsampler::registerFilter]: overriding existing filter '${name}'. Previously generated pipelines are not affected.`);
         }
-        this.filters.set(string, wgsl);
+        this.filters.set(name, wgsl);
     }
 
-    //prepare(): DownsamplingPass {
-    //    return new DownsamplingPass();
-    //}
+    prepare(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): DownsamplingPass {
+        const target = config?.target ?? texture;
+        return new DownsamplingPass([]);
+    }
+
+    generateMipMaps(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig) {
+        const pass = this.prepare(device, texture, config);
+        const commandEncoder = device.createCommandEncoder();
+        pass.encode(commandEncoder.beginComputePass()).end();
+        device.queue.submit([commandEncoder.finish()]);
+    }
 
     static foo() {
         console.log(makeShaderCode('rgba8unorm'));

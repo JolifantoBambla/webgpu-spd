@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "/dist"
+    "/dist/**"
   ],
   "scripts": {
     "test": "test",
@@ -23,5 +23,9 @@
   "bugs": {
     "url": "https://github.com/JolifantoBambla/gpu-spd-js/issues"
   },
-  "homepage": "https://github.com/JolifantoBambla/gpu-spd-js#readme"
+  "homepage": "https://github.com/JolifantoBambla/gpu-spd-js#readme",
+  "devDependencies": {
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.4.5"
+  }
 }
