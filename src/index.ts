@@ -562,7 +562,7 @@ fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> v
 }
 `;
 
-const SUPPORTED_FORMATS: Array<string> = [
+const SUPPORTED_FORMATS: Set<string> = [
     'rgba8unorm',
     'rgba8snorm',
     'rgba8uint',
@@ -581,6 +581,8 @@ const SUPPORTED_FORMATS: Array<string> = [
     'rgba32sint',
     'rgba32float',
 ];
+
+const SPD_MAX_MIP_LEVELS: number = 13;
 
 export enum SPDFilters {
     Average = "average",
@@ -619,35 +621,92 @@ export interface GPUDownsamplingPassConfig {
     numMips?: number,
 }
 
-export class GPUSinglePassDownsampler {
-    private filters: Map<string, string>;
-    //private something: WeakMap<GpuDevice, >;
+class Pipelines {
+    mipsLayouts: Array<GPUBindGroupLayout>;
+    pipleines: Array<GPUComputePipeline>;
+}
 
-    constructor() {
-        this.filters = new Map();
-        this.filters.set(SPDFilters.Average, SPD_FILTER_AVERAGE);
-        this.filters.set(SPDFilters.Min, SPD_FILTER_MIN);
-        this.filters.set(SPDFilters.Max, SPD_FILTER_MAX);
-        this.filters.set(SPDFilters.MinMax, SPD_FILTER_MINMAX);
+class DevicePipelines {
+    private device: WeakRef<GPUDevice>;
+    private maxMipsPerPass: number;
+    private internalResourcesBindGroupLayout: GPUBindGroupLayout;
+    private pipelines: Map<GPUTextureFormat, Map<string, Map<number, Pipelines>>>;
+
+    constructor(device: GPUDevice) {
+        this.device = new WeakRef(device);
+        this.maxMipsPerPass = Math.min(device.limits.maxStorageTexturesPerShaderStage, 6);
+        this.pipelines = new Map();
+        // todo: create internal resources bind group layout
     }
 
-    private getOrCreatePipelines(device: GPUDevice, targetFormat: GPUTextureFormat, filter: string, numMips: number): GPUComputePipeline {
-        if (!this.filters.has(filter)) {
-            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: unknown filter ${filter}, falling back to average`);
-        }
-        if (filter === SPD_FILTER_MINMAX && targetFormat.contains('r32')) {
-            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: filter ${filter} makes no sense for one-component target format ${targetFormat}`);
-        }
-        const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
+    private createPipelines(targetFormat: GPUTextureformat, filterCode: string, numMips: number): Pipelines | undefined {
+        // todo: this.maxMipsPerPass < 6
+        // todo: numMips < 13
         const shaderCode = makeShaderCode(targetFormat, filterCode);
 
-        return device.createComputePipeline({
+        /*
+        device.createComputePipeline({
             compute: {
                 module: undefined,
                 entryPoint: '',
             },
             layout: {}
         });
+        */
+       return undefined;
+    }
+
+    getOrCreatePipelines(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipelines | undefined {
+        if (!this.pipelines.has(targetFormat)) {
+            this.pipelines.set(targetFormat, new Map());
+        }
+        if (!this.pipelines.get(targetFormat)?.has(filterCode)) {
+            this.pipelines.get(targetFormat)?.set(filterCode, new Map());
+        }
+        if (!this.pipelines.get(targetFormat)?.get(filterCode)?.has(numMips)) {
+            const pipelines = this.createPipelines(targetFormat, filterCode, numMips);
+            if (pipelines) {
+                this.pipelines.get(targetFormat)?.get(filterCode)?.set(numMips, pipelines);
+            }
+        }
+        return this.pipelines.get(targetFormat)?.get(filterCode)?.get(numMips);
+    }
+}
+
+export class GPUSinglePassDownsampler {
+    private filters: Map<string, string>;
+    private devicePipelines: WeakMap<GpuDevice, DevicePipelines>;
+
+    constructor() {
+        this.filters = new Map([
+            [SPDFilters.Average, SPD_FILTER_AVERAGE],
+            [SPDFilters.Min, SPD_FILTER_MIN],
+            [SPDFilters.Max, SPD_FILTER_MAX],
+            [SPDFilters.MinMax, SPD_FILTER_MINMAX],
+        ]);
+        this.devicePipelines = new Map();
+    }
+
+    private getOrCreatePipelines(device: GPUDevice, targetFormat: GPUTextureFormat, filter: string, numMips: number): Pipelines {
+        // todo: fallback for 4 storage textures
+        if (device.limits.maxStorageTexturesPerShaderStage < 6) {
+            throw new Error(`[GPUSinglePassDownsampler::getOrCreatePipelines]: device only supports ${device.limits.maxStorageTexturesPerShaderStage} storage textures - 6 are required`);
+        }
+        if (!SUPPORTED_FORMATS.has(targetFormat)) {
+            throw new Error(`[GPUSinglePassDownsampler::getOrCreatePipelines]: format ${targetFormat} not supported`);
+        }
+        if (!this.filters.has(filter)) {
+            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: unknown filter ${filter}, falling back to average`);
+        }
+        if (filter === SPD_FILTER_MINMAX && targetFormat.includes('r32')) {
+            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: filter ${filter} makes no sense for one-component target format ${targetFormat}`);
+        }
+        const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
+        
+        if (!this.devicePipelines.has(device)) {
+            this.devicePipelines.set(device, new DevicePipelines(device));
+        }
+        return this.devicePipelines.get(device)?.getOrCreatePipelines(targetFormat, filterCode, numMips);
     }
 
     /**
@@ -667,20 +726,23 @@ export class GPUSinglePassDownsampler {
         this.filters.set(name, wgsl);
     }
 
-    prepare(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): DownsamplingPass {
+    prepare(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): DownsamplingPass | undefined {
         const target = config?.target ?? texture;
+        // todo: getOrCreatePipelines
+        // todo: configure pass
         return new DownsamplingPass([]);
     }
 
-    generateMipMaps(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig) {
+    generateMipMaps(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): boolean {
         const pass = this.prepare(device, texture, config);
-        const commandEncoder = device.createCommandEncoder();
-        pass.encode(commandEncoder.beginComputePass()).end();
-        device.queue.submit([commandEncoder.finish()]);
-    }
-
-    static foo() {
-        console.log(makeShaderCode('rgba8unorm'));
+        if (!pass) {
+            return false;
+        } else {
+            const commandEncoder = device.createCommandEncoder();
+            pass?.encode(commandEncoder.beginComputePass()).end();
+            device.queue.submit([commandEncoder.finish()]);
+            return true;
+        }
     }
 }
 
