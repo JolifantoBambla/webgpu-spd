@@ -1,5 +1,5 @@
 function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE): string {
-    return `
+    return /* wgsl */`
     // This file is part of the FidelityFX SDK.
 //
 // Copyright (C) 2023 Advanced Micro Devices, Inc.
@@ -91,8 +91,7 @@ struct DownsamplePassMeta {
 @group(0) @binding(6) var dst_mip_6: texture_storage_2d_array<${outputFormat}, write>;
 
 @group(1) @binding(0) var<uniform> downsample_pass_meta : DownsamplePassMeta;
-
-@group(2) @binding(0) var linear_clamp_sampler: sampler;
+@group(1) @binding(1) var linear_clamp_sampler: sampler;
 
 fn get_mips() -> u32 {
     return downsample_pass_meta.mips;
@@ -120,18 +119,18 @@ fn load_src_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
     return textureLoad(src_mip_0, uv, slice, 0);
 }
 
-fn store_src_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {
-    if (mip == 1) {
+fn store_dst_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {
+    if mip == 1 {
         textureStore(dst_mip_1, uv, slice, value);
-    } else if (mip == 2) {
+    } else if mip == 2 {
         textureStore(dst_mip_2, uv, slice, value);
-    } else if (mip == 3) {
+    } else if mip == 3 {
         textureStore(dst_mip_3, uv, slice, value);
-    } else if (mip == 4) {
+    } else if mip == 4 {
         textureStore(dst_mip_4, uv, slice, value);
-    } else if (mip == 5) {
+    } else if mip == 5 {
         textureStore(dst_mip_5, uv, slice, value);
-    } else if (mip == 6) {
+    } else if mip == 6 {
         textureStore(dst_mip_6, uv, slice, value);
     }
 }
@@ -185,7 +184,7 @@ fn spd_barrier() {
 ${filterOp}
 
 fn spd_store(pix: vec2<u32>, out_value: vec4<f32>, mip: u32, slice: u32) {
-    store_src_mip(out_value, pix, slice, mip + 1);
+    store_dst_mip(out_value, pix, slice, mip + 1);
 }
 
 fn spd_load_intermediate(x: u32, y: u32) -> vec4<f32> {
@@ -217,57 +216,13 @@ fn spd_reduce_load_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
 
 // Main logic ---------------------------------------------------------------------------------------------------------
 
-fn spd_downsample_mips_0_1_linear(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
-    var v: array<vec4<f32>, 4>;
-
-    var tex = workgroup_id.xy * 64 + vec2<u32>(x * 2, y * 2);
-    var pix = workgroup_id.xy * 32 + vec2<u32>(x, y);
-    v[0] = sample_src_image(tex, slice);
-    spd_store(pix, v[0], 0, slice);
-
-    tex = workgroup_id.xy * 64 + vec2<u32>(x * 2 + 32, y * 2);
-    pix = workgroup_id.xy * 32 + vec2<u32>(x + 16, y);
-    v[1] = sample_src_image(tex, slice);
-    spd_store(pix, v[1], 0, slice);
-
-    tex = workgroup_id.xy * 64 + vec2<u32>(x * 2, y * 2 + 32);
-    pix = workgroup_id.xy * 32 + vec2<u32>(x, y + 16);
-    v[2] = sample_src_image(tex, slice);
-    spd_store(pix, v[2], 0, slice);
-
-    tex = workgroup_id.xy * 64 + vec2<i32>(x * 2 + 32, y * 2 + 32);
-    pix = workgroup_id.xy * 32 + vec2<i32>(x + 16, y + 16);
-    v[3] = sample_src_image(tex, slice);
-    spd_store(pix, v[3], 0, slice);
-
-    if (mip <= 1) {
-        return;
-    }
-
-    for (var i = 0u; i < 4u; i++) {
-        spd_store_intermediate(x, y, v[i]);
-        spd_barrier();
-        if (local_invocation_index < 64) {
-            v[i] = spd_reduce_intermediate(
-                vec2<u32>(x * 2 + 0, y * 2 + 0),
-                vec2<u32>(x * 2 + 1, y * 2 + 0),
-                vec2<u32>(x * 2 + 0, y * 2 + 1),
-                vec2<u32>(x * 2 + 1, y * 2 + 1)
-            );
-            spd_store(workgroup_id.xy * 16 + vec2<u32>(x + (i % 2) * 8, y + (i / 2) * 8), v[i], 1, slice);
-        }
-        spd_barrier();
-    }
-
-    if (local_invocation_index < 64) {
-        spd_store_intermediate(x + 0, y + 0, v[0]);
-        spd_store_intermediate(x + 8, y + 0, v[1]);
-        spd_store_intermediate(x + 0, y + 8, v[2]);
-        spd_store_intermediate(x + 8, y + 8, v[3]);
+fn spd_populate_intermediate(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, slice: u32) {
+    if local_invocation_index < 4u {
+        spd_store_intermediate(x + y * 2, 0, load_src_image(workgroup_id.xy * 2 + vec2<u32>(x, y), slice));
     }
 }
 
-fn spd_downsample_mips_0_1_load(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
+fn spd_downsample_mips_0_1(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
     var v: array<vec4<f32>, 4>;
 
     let workgroup64 = workgroup_id.xy * 64;
@@ -294,14 +249,14 @@ fn spd_downsample_mips_0_1_load(x: u32, y: u32, workgroup_id: vec2<u32>, local_i
     v[3] = spd_reduce_load_4(tex, slice);
     spd_store(pix, v[3], 0, slice);
 
-    if (mip <= 1) {
+    if mip <= 1 {
         return;
     }
 
     for (var i = 0u; i < 4u; i++) {
         spd_store_intermediate(x, y, v[i]);
         spd_barrier();
-        if (local_invocation_index < 64) {
+        if local_invocation_index < 64 {
             v[i] = spd_reduce_intermediate(
                 vec2<u32>(x * 2 + 0, y * 2 + 0),
                 vec2<u32>(x * 2 + 1, y * 2 + 0),
@@ -313,7 +268,7 @@ fn spd_downsample_mips_0_1_load(x: u32, y: u32, workgroup_id: vec2<u32>, local_i
         spd_barrier();
     }
 
-    if (local_invocation_index < 64) {
+    if local_invocation_index < 64 {
         spd_store_intermediate(x + 0, y + 0, v[0]);
         spd_store_intermediate(x + 8, y + 0, v[1]);
         spd_store_intermediate(x + 0, y + 8, v[2]);
@@ -322,7 +277,7 @@ fn spd_downsample_mips_0_1_load(x: u32, y: u32, workgroup_id: vec2<u32>, local_i
 }
 
 fn spd_downsample_mip_2(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
-    if (local_invocation_index < 64u) {
+    if local_invocation_index < 64u {
         let v = spd_reduce_intermediate(
             vec2<u32>(x * 2 + 0, y * 2 + 0),
             vec2<u32>(x * 2 + 1, y * 2 + 0),
@@ -343,7 +298,7 @@ fn spd_downsample_mip_2(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocatio
 }
 
 fn spd_downsample_mip_3(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
-    if (local_invocation_index < 16u) {
+    if local_invocation_index < 16u {
         // x 0 x 0
         // 0 0 0 0
         // 0 x 0 x
@@ -371,7 +326,7 @@ fn spd_downsample_mip_3(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocatio
 }
 
 fn spd_downsample_mip_4(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
-    if (local_invocation_index < 4u) {
+    if local_invocation_index < 4u {
         // x 0 0 0 x 0 0 0
         // ...
         // 0 x 0 0 0 x 0 0
@@ -390,7 +345,7 @@ fn spd_downsample_mip_4(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocatio
 }
 
 fn spd_downsample_mip_5(workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
-    if (local_invocation_index < 1u) {
+    if local_invocation_index < 1u {
         // x x x x 0 ...
         // 0 ...
         let v = spd_reduce_intermediate(vec2<u32>(0, 0), vec2<u32>(1, 0), vec2<u32>(2, 0), vec2<u32>(3, 0));
@@ -399,25 +354,25 @@ fn spd_downsample_mip_5(workgroup_id: vec2<u32>, local_invocation_index: u32, mi
 }
 
 fn spd_downsample_next_four(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, base_mip: u32, mips: u32, slice: u32) {
-    if (mips <= base_mip) {
+    if mips <= base_mip {
         return;
     }
     spd_barrier();
     spd_downsample_mip_2(x, y, workgroup_id, local_invocation_index, base_mip, slice);
 
-    if (mips <= base_mip + 1) {
+    if mips <= base_mip + 1 {
         return;
     }
     spd_barrier();
     spd_downsample_mip_3(x, y, workgroup_id, local_invocation_index, base_mip + 1, slice);
 
-    if (mips <= base_mip + 2) {
+    if mips <= base_mip + 2 {
         return;
     }
     spd_barrier();
     spd_downsample_mip_4(x, y, workgroup_id, local_invocation_index, base_mip + 2, slice);
 
-    if (mips <= base_mip + 3) {
+    if mips <= base_mip + 3 {
         return;
     }
     spd_barrier();
@@ -445,7 +400,7 @@ fn spd_downsample_mips_6_7(x: u32, y: u32, mips: u32, slice: u32) {
     let v3 = spd_reduce_load_4(tex, slice);
     spd_store(pix, v3, 0, slice);
 
-    if (mips <= 7) {
+    if mips <= 7 {
         return;
     }
     // no barrier needed, working on values only from the same thread
@@ -463,23 +418,9 @@ fn spd_downsample_mips_6_7(x: u32, y: u32, mips: u32, slice: u32) {
 /// @param [in] mips                    the number of total MIP levels to compute for the input texture
 /// @param [in] numWorkGroups           the total number of dispatched work groups / thread groups for this slice
 /// @param [in] slice                   the slice of the input texture
-fn spd_downsample_first_6_linear(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
+fn spd_downsample_first_6(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
     let xy = map_to_xy(local_invocation_index);
-    spd_downsample_mips_0_1_linear(xy.x, xy.y, workgroup_id, local_invocation_index, mips, slice);
-    spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 2, mips, slice);
-}
-
-/// Downsamples a 64x64 tile based on the work group id.
-/// If after downsampling it's the last active thread group, computes the remaining MIP levels.
-///
-/// @param [in] workGroupID             index of the work group / thread group
-/// @param [in] localInvocationIndex    index of the thread within the thread group in 1D
-/// @param [in] mips                    the number of total MIP levels to compute for the input texture
-/// @param [in] numWorkGroups           the total number of dispatched work groups / thread groups for this slice
-/// @param [in] slice                   the slice of the input texture
-fn spd_downsample_first_6_load(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
-    let xy = map_to_xy(local_invocation_index);
-    spd_downsample_mips_0_1_load(xy.x, xy.y, workgroup_id, local_invocation_index, mips, slice);
+    spd_downsample_mips_0_1(xy.x, xy.y, workgroup_id, local_invocation_index, mips, slice);
     spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 2, mips, slice);
 }
 
@@ -497,24 +438,30 @@ fn spd_downsample_second_6(workgroup_id: vec2<u32>, local_invocation_index: u32,
     spd_downsample_next_four(xy.x, xy.y, vec2<u32>(0, 0), local_invocation_index, 2, mips - 6, slice);
 }
 
+fn spd_downsample_first_4(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
+    let xy = map_to_xy(local_invocation_index);
+    spd_downsample_mips_0_1(xy.x, xy.y, workgroup_id, local_invocation_index, mips, slice);
+    spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 2, min(mips, 4), slice);
+}
+
+fn spd_downsample_second_4(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
+    let xy = map_to_xy(local_invocation_index);
+    spd_populate_intermediate(xy.x, xy.y, workgroup_id, local_invocation_index, slice);
+    spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 0, min(mips, 8), slice);
+}
+
+fn spd_downsample_third_4(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
+    let xy = map_to_xy(local_invocation_index);
+    spd_populate_intermediate(xy.x, xy.y, workgroup_id, local_invocation_index, slice);
+    spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 0, min(mips, 12), slice);
+}
+
 // Entry points -------------------------------------------------------------------------------------------------------
 
 @compute
 @workgroup_size(256, 1, 1)
-fn downsample_first_6_linear(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-    spd_downsample_first_6_linear(
-        workgroup_id.xy + get_work_group_offset(),
-        local_invocation_index,
-        get_mips(),
-        get_num_work_groups(),
-        workgroup_id.z
-    );
-}
-
-@compute
-@workgroup_size(256, 1, 1)
-fn downsample_first_6_load(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-    spd_downsample_first_6_load(
+fn downsample_first_6(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    spd_downsample_first_6(
         workgroup_id.xy + get_work_group_offset(),
         local_invocation_index,
         get_mips(),
@@ -534,35 +481,71 @@ fn downsample_second_6(@builtin(local_invocation_index) local_invocation_index: 
         workgroup_id.z
     );
 }
+
+@compute
+@workgroup_size(256, 1, 1)
+fn downsample_first_4(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    spd_downsample_first_4(
+        workgroup_id.xy + get_work_group_offset(),
+        local_invocation_index,
+        get_mips(),
+        get_num_work_groups(),
+        workgroup_id.z
+    );
+}
+
+@compute
+@workgroup_size(256, 1, 1)
+fn downsample_second_4(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    spd_downsample_second_4(
+        workgroup_id.xy + get_work_group_offset(),
+        local_invocation_index,
+        get_mips(),
+        get_num_work_groups(),
+        workgroup_id.z
+    );
+}
+
+@compute
+@workgroup_size(256, 1, 1)
+fn downsample_third_4(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    spd_downsample_third_4(
+        workgroup_id.xy + get_work_group_offset(),
+        local_invocation_index,
+        get_mips(),
+        get_num_work_groups(),
+        workgroup_id.z
+    );
+}
     `;
 }
 
-const SPD_FILTER_AVERAGE: string = `
+const SPD_FILTER_AVERAGE: string = /* wgsl */`
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return (v0 + v1 + v2 + v3) * 0.25;
 }
 `;
 
-const SPD_FILTER_MIN = `
+const SPD_FILTER_MIN = /* wgsl */`
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return min(min(v0, v1), min(v2, v3));
 }
 `;
 
-const SPD_FILTER_MAX = `
+const SPD_FILTER_MAX = /* wgsl */`
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return max(max(v0, v1), max(v2, v3));
 }
 `;
 
-const SPD_FILTER_MINMAX = `
+const SPD_FILTER_MINMAX = /* wgsl */`
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     let max4 = max(max(v0.xy, v1.xy), max(v2.xy, v3.xy));
     return vec4<f32>(min(min(v0.x, v1.x), min(v2.x, v3.x)), max(max4.x, max4.y), 0, 0);
 }
 `;
 
-const SUPPORTED_FORMATS: Set<string> = [
+const SUPPORTED_FORMATS: Set<string> = new Set([
     'rgba8unorm',
     'rgba8snorm',
     'rgba8uint',
@@ -580,36 +563,34 @@ const SUPPORTED_FORMATS: Set<string> = [
     'rgba32uint',
     'rgba32sint',
     'rgba32float',
-];
+]);
 
-const SPD_MAX_MIP_LEVELS: number = 13;
+const SPD_MAX_MIP_LEVELS: number = 12; // can generate 12 mips, total mips are 13
 
 export enum SPDFilters {
-    Average = "average",
-    Min = "min",
-    Max = "max",
-    MinMax = "minmax",
+    Average = 'average',
+    Min = 'min',
+    Max = 'max',
+    MinMax = 'minmax',
 }
 
 class DownsamplingPassInner {
-    constructor(private pipeline: GPUComputePipeline, private bindGroups: Array<GPUBindGroup>, private dispatchDimension: number) {}
+    constructor(private pipeline: GPUComputePipeline, private bindGroups: Array<GPUBindGroup>, private dispatchDimensions: [number, number, number]) {}
     encode(computePass: GPUComputePassEncoder) {
         computePass.setPipeline(this.pipeline);
         this.bindGroups.forEach((bindGroup, index) => {
             computePass.setBindGroup(index, bindGroup);
         });
-        computePass.dispatchWorkgroups(this.dispatchDimension);
+        computePass.dispatchWorkgroups(...this.dispatchDimensions);
     }
 }
 
 export class DownsamplingPass {
-    constructor(private passes: Array<DownsamplingPassInner>, private target: GPUTexture) {}
+
+    constructor(private passes: Array<DownsamplingPassInner>, readonly target: GPUTexture) {}
     encode(computePass: GPUComputePassEncoder): GPUComputePassEncoder {
         this.passes.forEach(p => p.encode(computePass));
         return computePass;
-    }
-    get target(): GPUTexture {
-        return this.target;
     }
 }
 
@@ -621,9 +602,15 @@ export interface GPUDownsamplingPassConfig {
     numMips?: number,
 }
 
+interface GPUDownsamplingMeta {
+    invInputSize: [number, number],
+    workgroupOffset: [number, number],
+    numWorkGroups: number,
+    numMips: number,
+}
+
 class Pipelines {
-    mipsLayouts: Array<GPUBindGroupLayout>;
-    pipleines: Array<GPUComputePipeline>;
+    constructor(readonly mipsLayout: GPUBindGroupLayout, readonly pipelines: Array<GPUComputePipeline>) {}
 }
 
 class DevicePipelines {
@@ -636,27 +623,128 @@ class DevicePipelines {
         this.device = new WeakRef(device);
         this.maxMipsPerPass = Math.min(device.limits.maxStorageTexturesPerShaderStage, 6);
         this.pipelines = new Map();
-        // todo: create internal resources bind group layout
-    }
-
-    private createPipelines(targetFormat: GPUTextureformat, filterCode: string, numMips: number): Pipelines | undefined {
-        // todo: this.maxMipsPerPass < 6
-        // todo: numMips < 13
-        const shaderCode = makeShaderCode(targetFormat, filterCode);
-
-        /*
-        device.createComputePipeline({
-            compute: {
-                module: undefined,
-                entryPoint: '',
-            },
-            layout: {}
+        this.internalResourcesBindGroupLayout = device.createBindGroupLayout({
+            entries: [{
+                binding: 0,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: {
+                    type: 'uniform',
+                    hasDynamicOffset: false,
+                    minBindingSize: 32,
+                },
+            }],
         });
-        */
-       return undefined;
     }
 
-    getOrCreatePipelines(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipelines | undefined {
+    private createPipelines(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipelines | undefined {
+        const device = this.device.deref();
+        if (!device) {
+            return undefined;
+        }
+        const mipsBindGroupLayout = device.createBindGroupLayout({
+            entries: Array(Math.min(numMips, this.maxMipsPerPass) + 1).fill(0).map((_, i) => {
+                const entry: GPUBindGroupLayoutEntry = {
+                    binding: i,
+                    visibility: GPUShaderStage.COMPUTE,
+                };
+                if (i === 0) {
+                    entry.texture = {
+                        sampleType: 'unfilterable-float',
+                        viewDimension: '2d-array',
+                        multisampled: false,
+                    };
+                } else {
+                    entry.storageTexture = {
+                        access: 'write-only',
+                        format: targetFormat,
+                        viewDimension: '2d-array',
+                    };
+                }
+                return entry;
+            })
+        });
+
+        const module = device.createShaderModule({
+            code: makeShaderCode(targetFormat, filterCode),
+        });
+
+        if (this.maxMipsPerPass === 6) {
+            return new Pipelines(
+                mipsBindGroupLayout,
+                [
+                    device.createComputePipeline({
+                        compute: {
+                            module,
+                            entryPoint: 'downsample_first_6',
+                        },
+                        layout: device.createPipelineLayout({
+                            bindGroupLayouts: [
+                                mipsBindGroupLayout,
+                                this.internalResourcesBindGroupLayout,
+                            ],
+                        }),
+                    }),
+                    device.createComputePipeline({
+                        compute: {
+                            module,
+                            entryPoint: 'downsample_second_6',
+                        },
+                        layout: device.createPipelineLayout({
+                            bindGroupLayouts: [
+                                mipsBindGroupLayout,
+                                this.internalResourcesBindGroupLayout,
+                            ],
+                        }),
+                    }),
+                ],
+            );
+        } else {
+            return new Pipelines(
+                mipsBindGroupLayout,
+                [
+                    device.createComputePipeline({
+                        compute: {
+                            module,
+                            entryPoint: 'downsample_first_4',
+                        },
+                        layout: device.createPipelineLayout({
+                            bindGroupLayouts: [
+                                mipsBindGroupLayout,
+                                this.internalResourcesBindGroupLayout,
+                            ],
+                        }),
+                    }),
+                    device.createComputePipeline({
+                        compute: {
+                            module,
+                            entryPoint: 'downsample_second_4',
+                        },
+                        layout: device.createPipelineLayout({
+                            bindGroupLayouts: [
+                                mipsBindGroupLayout,
+                                this.internalResourcesBindGroupLayout,
+                            ],
+                        }),
+                    }),
+                    device.createComputePipeline({
+                        compute: {
+                            module,
+                            entryPoint: 'downsample_third_4',
+                        },
+                        layout: device.createPipelineLayout({
+                            bindGroupLayouts: [
+                                mipsBindGroupLayout,
+                                this.internalResourcesBindGroupLayout,
+                            ],
+                        }),
+                    }),
+                ],
+            );
+        }
+
+    }
+
+    private getOrCreatePipelines(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipelines | undefined {
         if (!this.pipelines.has(targetFormat)) {
             this.pipelines.set(targetFormat, new Map());
         }
@@ -671,11 +759,82 @@ class DevicePipelines {
         }
         return this.pipelines.get(targetFormat)?.get(filterCode)?.get(numMips);
     }
+
+    private createMetaBindGroup(device: GPUDevice, meta: GPUDownsamplingMeta): GPUBindGroup {
+        const metaBuffer = device.createBuffer({
+            size: 32,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+        device.queue.writeBuffer(metaBuffer, 0, new Float32Array([
+            ...meta.invInputSize,
+            ...meta.workgroupOffset,
+            meta.numWorkGroups,
+            meta.numMips,
+            0, 0, // padding
+        ]));
+        return device.createBindGroup({
+            layout: this.internalResourcesBindGroupLayout,
+            entries: [{
+                binding: 0,
+                resource: {
+                    buffer: metaBuffer,
+                },
+            }]
+        });
+    }
+
+    preparePass(texture: GPUTexture, target: GPUTexture, filter: string, dispatchDimensions: [number, number, number], meta: GPUDownsamplingMeta): DownsamplingPass | undefined {
+        const device = this.device.deref();
+        if (!device) {
+            return undefined;
+        }
+        const metaBindGroup = this.createMetaBindGroup(device, meta);
+        const numPasses = Math.floor(meta.numMips / this.maxMipsPerPass);
+        const passes = Array(numPasses).fill(0).map((_, pass) => {
+            const baseMip = pass * this.maxMipsPerPass;
+            const numMipsThisPass = meta.numMips - baseMip;
+            // todo: handle missing pipeline
+            const pipeline = this.getOrCreatePipelines(target.format, filter, numMipsThisPass)!;
+
+            const mipViews = Array(numMipsThisPass + 1).fill(0).map((_, i) => {
+                if (pass === 0 && i === 0) {
+                    return texture.createView({
+                        dimension: '2d-array',
+                        baseMipLevel: 0,
+                        mipLevelCount: 1,
+                        baseArrayLayer: 0,
+                        arrayLayerCount: texture.depthOrArrayLayers,
+                    });
+                } else {
+                    const mip = baseMip + i;
+                    return target.createView({
+                        dimension: '2d-array',
+                        baseMipLevel: texture === target ? mip : mip - 1,
+                        mipLevelCount: 1,
+                        baseArrayLayer: 0,
+                        arrayLayerCount: target.depthOrArrayLayers, 
+                    });
+                }
+            });
+
+            const mipsBindGroup = device.createBindGroup({
+                layout: pipeline?.mipsLayout,
+                entries: mipViews.map((v, i) => {
+                    return {
+                        binding: i,
+                        resource: v,
+                    };
+                }),
+            });
+            return new DownsamplingPassInner(pipeline.pipelines[pass], [mipsBindGroup, metaBindGroup], (pass === 0 || (pass < 2 && numPasses === 3)) ? dispatchDimensions : [1, 1, target.depthOrArrayLayers]);
+        });
+        return new DownsamplingPass(passes, target);
+    }
 }
 
 export class GPUSinglePassDownsampler {
     private filters: Map<string, string>;
-    private devicePipelines: WeakMap<GpuDevice, DevicePipelines>;
+    private devicePipelines: WeakMap<GPUDevice, DevicePipelines>;
 
     constructor() {
         this.filters = new Map([
@@ -687,26 +846,11 @@ export class GPUSinglePassDownsampler {
         this.devicePipelines = new Map();
     }
 
-    private getOrCreatePipelines(device: GPUDevice, targetFormat: GPUTextureFormat, filter: string, numMips: number): Pipelines {
-        // todo: fallback for 4 storage textures
-        if (device.limits.maxStorageTexturesPerShaderStage < 6) {
-            throw new Error(`[GPUSinglePassDownsampler::getOrCreatePipelines]: device only supports ${device.limits.maxStorageTexturesPerShaderStage} storage textures - 6 are required`);
-        }
-        if (!SUPPORTED_FORMATS.has(targetFormat)) {
-            throw new Error(`[GPUSinglePassDownsampler::getOrCreatePipelines]: format ${targetFormat} not supported`);
-        }
-        if (!this.filters.has(filter)) {
-            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: unknown filter ${filter}, falling back to average`);
-        }
-        if (filter === SPD_FILTER_MINMAX && targetFormat.includes('r32')) {
-            console.warn(`[GPUSinglePassDownsampler::getOrCreatePipelines]: filter ${filter} makes no sense for one-component target format ${targetFormat}`);
-        }
-        const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
-        
+    private getOrCreateDevicePipelines(device: GPUDevice): DevicePipelines | undefined {
         if (!this.devicePipelines.has(device)) {
             this.devicePipelines.set(device, new DevicePipelines(device));
         }
-        return this.devicePipelines.get(device)?.getOrCreatePipelines(targetFormat, filterCode, numMips);
+        return this.devicePipelines.get(device);
     }
 
     /**
@@ -728,9 +872,36 @@ export class GPUSinglePassDownsampler {
 
     prepare(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): DownsamplingPass | undefined {
         const target = config?.target ?? texture;
-        // todo: getOrCreatePipelines
-        // todo: configure pass
-        return new DownsamplingPass([]);
+        const numMips = Math.min(Math.max(config?.numMips ?? target.mipLevelCount, 0), SPD_MAX_MIP_LEVELS);
+        const filter = config?.filter ?? SPD_FILTER_AVERAGE;
+        const offset = (config?.offset ?? [0, 0]).map((o, d) => Math.max(0, Math.min(o, (d === 0 ? texture.width : texture.height) - 1)));
+        const size = (config?.size ?? [texture.width, texture.height]).map((s, d) => Math.max(0, Math.min(s, (d === 0 ? texture.width : texture.height) - offset[d])));
+
+        // todo: validate target size & array layers
+
+        const workgroupOffset = offset.map(o => o / 64);
+        const dispatchDimensions = offset.map((o, i) => ((o + size[i] - 1) / 64) + 1 - workgroupOffset[i]) as [number, number, number];
+        const numWorkGroups = dispatchDimensions.reduce((product, v) => v * product, 1);
+
+        const meta = {
+            invInputSize: size.map(s => 1.0 / s) as [number, number],
+            workgroupOffset: workgroupOffset as [number, number],
+            numWorkGroups,
+            numMips,
+        };
+
+        if (!SUPPORTED_FORMATS.has(target.format)) {
+            throw new Error(`[GPUSinglePassDownsampler::prepare]: format ${target.format} not supported`);
+        }
+        if (!this.filters.has(filter)) {
+            console.warn(`[GPUSinglePassDownsampler::prepare]: unknown filter ${filter}, falling back to average`);
+        }
+        if (filter === SPD_FILTER_MINMAX && target.format.includes('r32')) {
+            console.warn(`[GPUSinglePassDownsampler::prepare]: filter ${filter} makes no sense for one-component target format ${target.format}`);
+        }
+        const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
+
+        return this.getOrCreateDevicePipelines(device)?.preparePass(texture, target, filterCode, dispatchDimensions, meta);
     }
 
     generateMipMaps(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): boolean {
