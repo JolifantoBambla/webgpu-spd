@@ -613,6 +613,16 @@ class Pipelines {
     constructor(readonly mipsLayout: GPUBindGroupLayout, readonly pipelines: Array<GPUComputePipeline>) {}
 }
 
+export interface PipelineConfig {
+    format: GPUTextureFormat,
+    filter?: Array<string>,
+}
+
+export interface DeviceConfig {
+    device: GPUDevice,
+    pipelineConfigs?: Array<PipelineConfig>,
+}
+
 class DevicePipelines {
     private device: WeakRef<GPUDevice>;
     private maxMipsPerPass: number;
@@ -633,6 +643,17 @@ class DevicePipelines {
                     minBindingSize: 32,
                 },
             }],
+        });
+    }
+
+    preparePipelines(pipelineConfigs?: Array<PipelineConfig>) {
+        pipelineConfigs?.map(c => {
+            (c.filter ?? [SPD_FILTER_AVERAGE]).map(f => {
+                for (let i = 0; i < this.maxMipsPerPass; ++i) {
+                    this.getOrCreatePipelines(c.format, f, i + 1);
+                }
+            })
+            
         });
     }
 
@@ -836,7 +857,7 @@ export class GPUSinglePassDownsampler {
     private filters: Map<string, string>;
     private devicePipelines: WeakMap<GPUDevice, DevicePipelines>;
 
-    constructor() {
+    constructor(deviceConfig?: DeviceConfig) {
         this.filters = new Map([
             [SPDFilters.Average, SPD_FILTER_AVERAGE],
             [SPDFilters.Min, SPD_FILTER_MIN],
@@ -844,6 +865,13 @@ export class GPUSinglePassDownsampler {
             [SPDFilters.MinMax, SPD_FILTER_MINMAX],
         ]);
         this.devicePipelines = new Map();
+        if (deviceConfig) {
+            this.prepareDevicePipelines(deviceConfig);
+        }
+    }
+
+    prepareDevicePipelines(deviceConfig: DeviceConfig) {
+        this.getOrCreateDevicePipelines(deviceConfig.device!)?.preparePipelines(deviceConfig?.pipelineConfigs);
     }
 
     private getOrCreateDevicePipelines(device: GPUDevice): DevicePipelines | undefined {
@@ -892,6 +920,9 @@ export class GPUSinglePassDownsampler {
 
         if (!SUPPORTED_FORMATS.has(target.format)) {
             throw new Error(`[GPUSinglePassDownsampler::prepare]: format ${target.format} not supported`);
+        }
+        if (target.format === 'bgra8unorm' && !device.features.has('bgra8unorm-storage')) {
+            throw new Error(`[GPUSinglePassDownsampler::prepare]: format ${target.format} not supported without feature 'bgra8unorm-storage' enabled`);
         }
         if (!this.filters.has(filter)) {
             console.warn(`[GPUSinglePassDownsampler::prepare]: unknown filter ${filter}, falling back to average`);

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGPU Single-Pass Downsampling</title>
+</head>
+
+<body>
+    <script type="module">
+        import {GPUSinglePassDownsampler} from './dist/index.js';    
+        async function main() {
+            const adapter = await navigator.gpu.requestAdapter();
+            const device = await adapter.requestDevice();
+            console.log(new GPUSinglePassDownsampler({device}));
+        }
+        main();
+    </script>
+</body>
+</html>
