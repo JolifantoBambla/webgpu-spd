@@ -1,4 +1,17 @@
-function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE): string {
+function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE, numMips: number): string {
+    const mipsBindings = Array(numMips).fill(0)
+        .map((_, i) => `@group(0) @binding(${i + 1}) var dst_mip_${i + 1}: texture_storage_2d_array<${outputFormat}, write>;`)
+        .join('\n');
+
+    const mipsAccessorBody = Array(numMips).fill(0)
+        .map((_, i) => {
+            return `${i === 0 ? '' : ' else '}if mip == ${i + 1} {
+                textureStore(dst_mip_${i + 1}, uv, slice, value);
+            }`;
+        })
+        .join('');
+    const mipsAccessor = `fn store_dst_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {\n${mipsAccessorBody}\n}`
+
     return /* wgsl */`
     // This file is part of the FidelityFX SDK.
 //
@@ -83,12 +96,7 @@ struct DownsamplePassMeta {
 // In the original version dst_mip_i is an image2Darray [SPD_MAX_MIP_LEVELS+1], i.e., 12+1, but WGSL doesn't support arrays of textures yet
 // Also these are read_write because for mips 7-13, the workgroup reads from mip level 6 - since most formats don't support read_write access in WGSL yet, this is split in two passes and we can just use write access
 @group(0) @binding(0) var src_mip_0: texture_2d_array<f32>;
-@group(0) @binding(1) var dst_mip_1: texture_storage_2d_array<${outputFormat}, write>;
-@group(0) @binding(2) var dst_mip_2: texture_storage_2d_array<${outputFormat}, write>;
-@group(0) @binding(3) var dst_mip_3: texture_storage_2d_array<${outputFormat}, write>;
-@group(0) @binding(4) var dst_mip_4: texture_storage_2d_array<${outputFormat}, write>;
-@group(0) @binding(5) var dst_mip_5: texture_storage_2d_array<${outputFormat}, write>;
-@group(0) @binding(6) var dst_mip_6: texture_storage_2d_array<${outputFormat}, write>;
+${mipsBindings}
 
 @group(1) @binding(0) var<uniform> downsample_pass_meta : DownsamplePassMeta;
 @group(1) @binding(1) var linear_clamp_sampler: sampler;
@@ -119,21 +127,7 @@ fn load_src_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
     return textureLoad(src_mip_0, uv, slice, 0);
 }
 
-fn store_dst_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {
-    if mip == 1 {
-        textureStore(dst_mip_1, uv, slice, value);
-    } else if mip == 2 {
-        textureStore(dst_mip_2, uv, slice, value);
-    } else if mip == 3 {
-        textureStore(dst_mip_3, uv, slice, value);
-    } else if mip == 4 {
-        textureStore(dst_mip_4, uv, slice, value);
-    } else if mip == 5 {
-        textureStore(dst_mip_5, uv, slice, value);
-    } else if mip == 6 {
-        textureStore(dst_mip_6, uv, slice, value);
-    }
-}
+${mipsAccessor}
 
 // Workgroup -----------------------------------------------------------------------------------------------------------
 
@@ -686,7 +680,7 @@ class DevicePipelines {
         });
 
         const module = device.createShaderModule({
-            code: makeShaderCode(targetFormat, filterCode),
+            code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass)),
         });
 
         if (this.maxMipsPerPass === 6) {
@@ -813,7 +807,7 @@ class DevicePipelines {
         const numPasses = Math.floor(meta.numMips / this.maxMipsPerPass);
         const passes = Array(numPasses).fill(0).map((_, pass) => {
             const baseMip = pass * this.maxMipsPerPass;
-            const numMipsThisPass = meta.numMips - baseMip;
+            const numMipsThisPass = Math.min(meta.numMips - baseMip, this.maxMipsPerPass);
             // todo: handle missing pipeline
             const pipeline = this.getOrCreatePipelines(target.format, filter, numMipsThisPass)!;
 
@@ -901,7 +895,7 @@ export class GPUSinglePassDownsampler {
     prepare(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): DownsamplingPass | undefined {
         const target = config?.target ?? texture;
         const numMips = Math.min(Math.max(config?.numMips ?? target.mipLevelCount, 0), SPD_MAX_MIP_LEVELS);
-        const filter = config?.filter ?? SPD_FILTER_AVERAGE;
+        const filter = config?.filter ?? SPDFilters.Average;
         const offset = (config?.offset ?? [0, 0]).map((o, d) => Math.max(0, Math.min(o, (d === 0 ? texture.width : texture.height) - 1)));
         const size = (config?.size ?? [texture.width, texture.height]).map((s, d) => Math.max(0, Math.min(s, (d === 0 ? texture.width : texture.height) - offset[d])));
 

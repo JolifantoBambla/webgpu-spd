@@ -9,12 +9,36 @@
 
 <body>
     <script type="module">
-        import {GPUSinglePassDownsampler} from './dist/index.js';    
+        import {GPUSinglePassDownsampler} from './dist/index.js';
+
+        async function createTexture(device, url) {
+            const blob = await (await fetch(url)).blob();
+            const source = await createImageBitmap(blob, { colorSpaceConversion: 'none' });
+            const texture = device.createTexture({
+                // todo: different formats?
+                format: 'rgba8unorm',
+                mipLevelCount: 1 + Math.log2(Math.max(source.width, source.height)),
+                size: [source.width, source.height],
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+            });
+            device.queue.copyExternalImageToTexture({ source, }, { texture }, { width: source.width, height: source.height });
+            return texture;
+        }
+        
         async function main() {
             const adapter = await navigator.gpu.requestAdapter();
-            const device = await adapter.requestDevice();
-            console.log(new GPUSinglePassDownsampler({device}));
+            // todo: default storage texture limit
+            const device = await adapter.requestDevice({requiredLimits: { maxStorageTexturesPerShaderStage: 6 }});
+            console.log(device.limits.maxStorageTexturesPerShaderStage);
+            const downsampler = new GPUSinglePassDownsampler();
+            console.log(downsampler);
+            // todo: create mips on file drop
+            const texture = await createTexture(device, 'https://webgpufundamentals.org/webgpu/resources/images/coins.jpg');
+            console.log(texture);
+            downsampler.generateMipMaps(device, texture);
+            // todo: display mips (add slider for mips)
         }
+
         main();
     </script>
 </body>
