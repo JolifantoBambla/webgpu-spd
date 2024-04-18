@@ -8,37 +8,166 @@
 </head>
 
 <body>
+    <div>
+        <label for="texture">Upload texture</label>
+        <input id="texture" type="file" accept="image/*">
+    </div>
+    <canvas></canvas>
+    <div>
+        <div>
+            Mip Level
+            <input id="mipLevelSlider" type="range" min="0" max="0" value="0" oninput="this.nextElementSibling.value = this.value">
+            <output>0</output>
+        </div>
+        <div>
+            Array Layer
+            <input id="arrayLayerSlider" type="range" min="0" max="0" value="0" oninput="this.nextElementSibling.value = this.value">
+            <output>0</output>
+        </div>
+    </div>
     <script type="module">
         import {GPUSinglePassDownsampler} from './dist/index.js';
-
-        async function createTexture(device, url) {
-            const blob = await (await fetch(url)).blob();
-            const source = await createImageBitmap(blob, { colorSpaceConversion: 'none' });
-            const texture = device.createTexture({
-                // todo: different formats?
-                format: 'rgba8unorm',
-                mipLevelCount: 1 + Math.log2(Math.max(source.width, source.height)),
-                size: [source.width, source.height],
-                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-            });
-            device.queue.copyExternalImageToTexture({ source, }, { texture }, { width: source.width, height: source.height });
-            return texture;
-        }
         
         async function main() {
             const adapter = await navigator.gpu.requestAdapter();
             // todo: default storage texture limit
             const device = await adapter.requestDevice({requiredLimits: { maxStorageTexturesPerShaderStage: 6 }});
-            console.log(device.limits.maxStorageTexturesPerShaderStage);
+            
+            const canvas = document.querySelector('canvas');
+            const context = canvas.getContext('webgpu');
+            const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+            context.configure({
+                device,
+                format: presentationFormat,
+            });
+
+            const module = device.createShaderModule({
+                code: `
+                struct Config {
+                    mip: u32,
+                    array_layer: u32,
+                }
+                
+                @group(0) @binding(0) var texture: texture_2d_array<f32>;
+                @group(0) @binding(1) var<uniform> config: Config;
+                    
+                @vertex
+                fn vertex(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+                    return vec4(vec2(f32((vertex_index << 1) & 2), f32(vertex_index & 2)) * 2 - 1, 0, 1);
+                }
+                
+                @fragment
+                fn fragment(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
+                    let texture_size = textureDimensions(texture, config.mip);
+                    let texture_coords = vec2<u32>(floor(coord.xy));
+                    if texture_coords.x < texture_size.x && texture_coords.y < texture_size.y {
+                        return vec4(textureLoad(texture, vec2<i32>(floor(coord.xy)), config.array_layer, config.mip).rgb, 1.0);
+                    } else {
+                        return vec4(0.0, 0.0, 0.0, 1.0);
+                    }
+                }
+                `,
+            });
+            const pipeline = device.createRenderPipeline({
+                layout: 'auto',
+                vertex: {
+                    module,
+                    entryPoint: 'vertex',
+                },
+                fragment: {
+                    module,
+                    entryPoint: 'fragment',
+                    targets: [{ format: presentationFormat }],
+                },
+            });
+
             const downsampler = new GPUSinglePassDownsampler();
             console.log(downsampler);
-            // todo: create mips on file drop
-            const texture = await createTexture(device, 'https://webgpufundamentals.org/webgpu/resources/images/coins.jpg');
-            console.log(texture);
-            downsampler.generateMipMaps(device, texture);
-            // todo: display mips (add slider for mips)
-        }
 
+            const buffer = device.createBuffer({
+                size: 8,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
+            
+            let bindGroup = undefined;
+            const render = (mip = 0, arrayLayer = 0) => {
+                if (bindGroup) {
+                    device.queue.writeBuffer(buffer, 0, new Uint32Array([mip, arrayLayer]));
+                    
+                    const encoder = device.createCommandEncoder();
+
+                    const pass = encoder.beginRenderPass({
+                        colorAttachments: [{
+                            view: context.getCurrentTexture().createView(),
+                            clearValue: [0,0,0,0],
+                            loadOp: 'clear',
+                            storeOp: 'store',
+                        }],
+                    });
+                    pass.setPipeline(pipeline);
+                    pass.setBindGroup(0, bindGroup);
+                    pass.draw(3);
+                    pass.end();
+
+                    device.queue.submit([encoder.finish()]);
+                }
+            }
+
+            const mipLevelSlider = document.getElementById('mipLevelSlider');
+            const arrayLayerSlider = document.getElementById('arrayLayerSlider');
+            mipLevelSlider.addEventListener('input', _ => render(mipLevelSlider.value, arrayLayerSlider.value));
+            arrayLayerSlider.addEventListener('input', _ => render(mipLevelSlider.value, arrayLayerSlider.value));
+
+            const onNewTexture = texture => {
+                if (!downsampler.generateMipMaps(device, texture)) {
+                    console.warn(`could not downsample texture generated from ${textureUrl}`);
+                    return;
+                }
+
+                canvas.width = texture.width;
+                canvas.height = texture.height;
+
+                bindGroup = device.createBindGroup({
+                    layout: pipeline.getBindGroupLayout(0),
+                    entries: [
+                        {
+                            binding: 0,
+                            resource: texture.createView({
+                                dimension: '2d-array',
+                                mipLevelCount: texture.mipLevelCount,
+                                arrayLayerCount: texture.arrayLayerCount,
+                            }),
+                        },
+                        { binding: 1, resource: { buffer }},
+                    ]
+                });
+
+                mipLevelSlider.max = texture.mipLevelCount - 1;
+                mipLevelSlider.value = 0;
+                
+                arrayLayerSlider.max = texture.depthOrArrayLayers - 1;
+                arrayLayerSlider.value = 0;
+
+                render();
+            }
+
+            const textureInput = document.getElementById('texture');
+            textureInput.addEventListener('change', _ => {
+                if (textureInput.files.length) {
+                    createImageBitmap(textureInput.files[0], { colorSpaceConversion: 'none' }).then(source => {
+                        const texture = device.createTexture({
+                            // todo: different formats?
+                            format: 'rgba8unorm',
+                            mipLevelCount: 1 + Math.log2(Math.max(source.width, source.height)),
+                            size: [source.width, source.height],
+                            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+                        });
+                        device.queue.copyExternalImageToTexture({ source, }, { texture }, { width: source.width, height: source.height });
+                        onNewTexture(texture);
+                    });
+                }
+            });
+        }
         main();
     </script>
 </body>
