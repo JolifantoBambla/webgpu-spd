@@ -85,12 +85,9 @@ fn srgb_to_linear(value: f32) -> f32 {
 
 // Resources & Accessors -----------------------------------------------------------------------------------------------
 struct DownsamplePassMeta {
-    inv_input_size: vec2<f32>,
     work_group_offset: vec2<u32>,
     num_work_groups: u32,
     mips: u32,
-    padding_0: u32,
-    padding_1: u32,
 }
 
 // In the original version dst_mip_i is an image2Darray [SPD_MAX_MIP_LEVELS+1], i.e., 12+1, but WGSL doesn't support arrays of textures yet
@@ -99,7 +96,6 @@ struct DownsamplePassMeta {
 ${mipsBindings}
 
 @group(1) @binding(0) var<uniform> downsample_pass_meta : DownsamplePassMeta;
-@group(1) @binding(1) var linear_clamp_sampler: sampler;
 
 fn get_mips() -> u32 {
     return downsample_pass_meta.mips;
@@ -111,16 +107,6 @@ fn get_num_work_groups() -> u32 {
 
 fn get_work_group_offset() -> vec2<u32> {
     return downsample_pass_meta.work_group_offset;
-}
-
-fn get_inv_input_size() -> vec2<f32> {
-    return downsample_pass_meta.inv_input_size;
-}
-
-fn sample_src_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
-    let tex_coord = vec2<f32>(uv) * get_inv_input_size() + get_inv_input_size();
-    let result = textureSampleLevel(src_mip_0, linear_clamp_sampler, vec2<f32>(tex_coord), slice, 0);
-    return vec4<f32>(srgb_to_linear(result.x), srgb_to_linear(result.y), srgb_to_linear(result.z), result.w);
 }
 
 fn load_src_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
@@ -412,98 +398,18 @@ fn spd_downsample_mips_6_7(x: u32, y: u32, mips: u32, slice: u32) {
 /// @param [in] mips                    the number of total MIP levels to compute for the input texture
 /// @param [in] numWorkGroups           the total number of dispatched work groups / thread groups for this slice
 /// @param [in] slice                   the slice of the input texture
-fn spd_downsample_first_6(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
+fn spd_downsample(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
     let xy = map_to_xy(local_invocation_index);
     spd_downsample_mips_0_1(xy.x, xy.y, workgroup_id, local_invocation_index, mips, slice);
     spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 2, mips, slice);
-}
-
-/// Downsamples a 64x64 tile based on the work group id.
-/// If after downsampling it's the last active thread group, computes the remaining MIP levels.
-///
-/// @param [in] workGroupID             index of the work group / thread group
-/// @param [in] localInvocationIndex    index of the thread within the thread group in 1D
-/// @param [in] mips                    the number of total MIP levels to compute for the input texture
-/// @param [in] numWorkGroups           the total number of dispatched work groups / thread groups for this slice
-/// @param [in] slice                   the slice of the input texture
-fn spd_downsample_second_6(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
-    let xy = map_to_xy(local_invocation_index);
-    spd_downsample_mips_6_7(xy.x, xy.y, mips, slice);
-    spd_downsample_next_four(xy.x, xy.y, vec2<u32>(0, 0), local_invocation_index, 2, mips - 6, slice);
-}
-
-fn spd_downsample_first_4(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
-    let xy = map_to_xy(local_invocation_index);
-    spd_downsample_mips_0_1(xy.x, xy.y, workgroup_id, local_invocation_index, mips, slice);
-    spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 2, min(mips, 4), slice);
-}
-
-fn spd_downsample_second_4(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
-    let xy = map_to_xy(local_invocation_index);
-    spd_populate_intermediate(xy.x, xy.y, workgroup_id, local_invocation_index, slice);
-    spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 0, min(mips, 8), slice);
-}
-
-fn spd_downsample_third_4(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
-    let xy = map_to_xy(local_invocation_index);
-    spd_populate_intermediate(xy.x, xy.y, workgroup_id, local_invocation_index, slice);
-    spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 0, min(mips, 12), slice);
 }
 
 // Entry points -------------------------------------------------------------------------------------------------------
 
 @compute
 @workgroup_size(256, 1, 1)
-fn downsample_first_6(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-    spd_downsample_first_6(
-        workgroup_id.xy + get_work_group_offset(),
-        local_invocation_index,
-        get_mips(),
-        get_num_work_groups(),
-        workgroup_id.z
-    );
-}
-
-@compute
-@workgroup_size(256, 1, 1)
-fn downsample_second_6(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-    spd_downsample_second_6(
-        workgroup_id.xy + get_work_group_offset(),
-        local_invocation_index,
-        get_mips(),
-        get_num_work_groups(),
-        workgroup_id.z
-    );
-}
-
-@compute
-@workgroup_size(256, 1, 1)
-fn downsample_first_4(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-    spd_downsample_first_4(
-        workgroup_id.xy + get_work_group_offset(),
-        local_invocation_index,
-        get_mips(),
-        get_num_work_groups(),
-        workgroup_id.z
-    );
-}
-
-@compute
-@workgroup_size(256, 1, 1)
-fn downsample_second_4(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-    spd_downsample_second_4(
-        workgroup_id.xy + get_work_group_offset(),
-        local_invocation_index,
-        get_mips(),
-        get_num_work_groups(),
-        workgroup_id.z
-    );
-}
-
-@compute
-@workgroup_size(256, 1, 1)
-fn downsample_third_4(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-    spd_downsample_third_4(
+fn downsample(@builtin(local_invocation_index) local_invocation_index: u32, @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    spd_downsample(
         workgroup_id.xy + get_work_group_offset(),
         local_invocation_index,
         get_mips(),
@@ -580,7 +486,6 @@ class DownsamplingPassInner {
 }
 
 export class DownsamplingPass {
-
     constructor(private passes: Array<DownsamplingPassInner>, readonly target: GPUTexture) {}
     encode(computePass: GPUComputePassEncoder): GPUComputePassEncoder {
         this.passes.forEach(p => p.encode(computePass));
@@ -597,14 +502,13 @@ export interface GPUDownsamplingPassConfig {
 }
 
 interface GPUDownsamplingMeta {
-    invInputSize: [number, number],
     workgroupOffset: [number, number],
     numWorkGroups: number,
     numMips: number,
 }
 
-class Pipelines {
-    constructor(readonly mipsLayout: GPUBindGroupLayout, readonly pipelines: Array<GPUComputePipeline>) {}
+class Pipeline {
+    constructor(readonly mipsLayout: GPUBindGroupLayout, readonly pipelines: GPUComputePipeline) {}
 }
 
 export interface PipelineConfig {
@@ -617,11 +521,19 @@ export interface DeviceConfig {
     pipelineConfigs?: Array<PipelineConfig>,
 }
 
+interface Config {
+    filterCode: string,
+    target: GPUTexture,
+    offset: [number, number],
+    size: [number, number],
+    numMips: number,
+}
+
 class DevicePipelines {
     private device: WeakRef<GPUDevice>;
     private maxMipsPerPass: number;
     private internalResourcesBindGroupLayout: GPUBindGroupLayout;
-    private pipelines: Map<GPUTextureFormat, Map<string, Map<number, Pipelines>>>;
+    private pipelines: Map<GPUTextureFormat, Map<string, Map<number, Pipeline>>>;
 
     constructor(device: GPUDevice) {
         this.device = new WeakRef(device);
@@ -634,7 +546,7 @@ class DevicePipelines {
                 buffer: {
                     type: 'uniform',
                     hasDynamicOffset: false,
-                    minBindingSize: 32,
+                    minBindingSize: 16,
                 },
             }],
         });
@@ -644,14 +556,14 @@ class DevicePipelines {
         pipelineConfigs?.map(c => {
             (c.filter ?? [SPD_FILTER_AVERAGE]).map(f => {
                 for (let i = 0; i < this.maxMipsPerPass; ++i) {
-                    this.getOrCreatePipelines(c.format, f, i + 1);
+                    this.getOrCreatePipeline(c.format, f, i + 1);
                 }
             })
             
         });
     }
 
-    private createPipelines(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipelines | undefined {
+    private createPipeline(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipeline | undefined {
         const device = this.device.deref();
         if (!device) {
             return undefined;
@@ -683,109 +595,48 @@ class DevicePipelines {
             code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass)),
         });
 
-        if (this.maxMipsPerPass === 6) {
-            return new Pipelines(
-                mipsBindGroupLayout,
-                [
-                    device.createComputePipeline({
-                        compute: {
-                            module,
-                            entryPoint: 'downsample_first_6',
-                        },
-                        layout: device.createPipelineLayout({
-                            bindGroupLayouts: [
-                                mipsBindGroupLayout,
-                                this.internalResourcesBindGroupLayout,
-                            ],
-                        }),
-                    }),
-                    device.createComputePipeline({
-                        compute: {
-                            module,
-                            entryPoint: 'downsample_second_6',
-                        },
-                        layout: device.createPipelineLayout({
-                            bindGroupLayouts: [
-                                mipsBindGroupLayout,
-                                this.internalResourcesBindGroupLayout,
-                            ],
-                        }),
-                    }),
-                ],
-            );
-        } else {
-            return new Pipelines(
-                mipsBindGroupLayout,
-                [
-                    device.createComputePipeline({
-                        compute: {
-                            module,
-                            entryPoint: 'downsample_first_4',
-                        },
-                        layout: device.createPipelineLayout({
-                            bindGroupLayouts: [
-                                mipsBindGroupLayout,
-                                this.internalResourcesBindGroupLayout,
-                            ],
-                        }),
-                    }),
-                    device.createComputePipeline({
-                        compute: {
-                            module,
-                            entryPoint: 'downsample_second_4',
-                        },
-                        layout: device.createPipelineLayout({
-                            bindGroupLayouts: [
-                                mipsBindGroupLayout,
-                                this.internalResourcesBindGroupLayout,
-                            ],
-                        }),
-                    }),
-                    device.createComputePipeline({
-                        compute: {
-                            module,
-                            entryPoint: 'downsample_third_4',
-                        },
-                        layout: device.createPipelineLayout({
-                            bindGroupLayouts: [
-                                mipsBindGroupLayout,
-                                this.internalResourcesBindGroupLayout,
-                            ],
-                        }),
-                    }),
-                ],
-            );
-        }
-
+        return new Pipeline(
+            mipsBindGroupLayout,
+            device.createComputePipeline({
+                compute: {
+                    module,
+                    entryPoint: 'downsample',
+                },
+                layout: device.createPipelineLayout({
+                    bindGroupLayouts: [
+                        mipsBindGroupLayout,
+                        this.internalResourcesBindGroupLayout,
+                    ],
+                }),
+            }),
+        );
     }
 
-    private getOrCreatePipelines(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipelines | undefined {
+    private getOrCreatePipeline(targetFormat: GPUTextureFormat, filterCode: string, numMipsToCreate: number): Pipeline | undefined {
         if (!this.pipelines.has(targetFormat)) {
             this.pipelines.set(targetFormat, new Map());
         }
         if (!this.pipelines.get(targetFormat)?.has(filterCode)) {
             this.pipelines.get(targetFormat)?.set(filterCode, new Map());
         }
-        if (!this.pipelines.get(targetFormat)?.get(filterCode)?.has(numMips)) {
-            const pipelines = this.createPipelines(targetFormat, filterCode, numMips);
+        if (!this.pipelines.get(targetFormat)?.get(filterCode)?.has(numMipsToCreate)) {
+            const pipelines = this.createPipeline(targetFormat, filterCode, numMipsToCreate);
             if (pipelines) {
-                this.pipelines.get(targetFormat)?.get(filterCode)?.set(numMips, pipelines);
+                this.pipelines.get(targetFormat)?.get(filterCode)?.set(numMipsToCreate, pipelines);
             }
         }
-        return this.pipelines.get(targetFormat)?.get(filterCode)?.get(numMips);
+        return this.pipelines.get(targetFormat)?.get(filterCode)?.get(numMipsToCreate);
     }
 
     private createMetaBindGroup(device: GPUDevice, meta: GPUDownsamplingMeta): GPUBindGroup {
         const metaBuffer = device.createBuffer({
-            size: 32,
+            size: 16,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
-        device.queue.writeBuffer(metaBuffer, 0, new Float32Array([
-            ...meta.invInputSize,
+        device.queue.writeBuffer(metaBuffer, 0, new Uint32Array([
             ...meta.workgroupOffset,
             meta.numWorkGroups,
             meta.numMips,
-            0, 0, // padding
         ]));
         return device.createBindGroup({
             layout: this.internalResourcesBindGroupLayout,
@@ -798,21 +649,33 @@ class DevicePipelines {
         });
     }
 
-    preparePass(texture: GPUTexture, target: GPUTexture, filter: string, dispatchDimensions: [number, number, number], meta: GPUDownsamplingMeta): DownsamplingPass | undefined {
+    preparePass(texture: GPUTexture, target: GPUTexture, filterCode: string, offset: [number, number], size: [number, number], numMipsTotal: number): DownsamplingPass | undefined {
         const device = this.device.deref();
         if (!device) {
             return undefined;
         }
-        const metaBindGroup = this.createMetaBindGroup(device, meta);
-        const numPasses = Math.floor(meta.numMips / this.maxMipsPerPass);
-        const passes = Array(numPasses).fill(0).map((_, pass) => {
-            const baseMip = pass * this.maxMipsPerPass;
-            const numMipsThisPass = Math.min(meta.numMips - baseMip, this.maxMipsPerPass);
+
+        const passes = [];
+        for (let baseMip = 0; baseMip < numMipsTotal - 1; baseMip += this.maxMipsPerPass) {
+            const numMipsThisPass = Math.min(numMipsTotal - 1 - baseMip, this.maxMipsPerPass);
+
+            const baseMipOffset = offset.map(o => Math.floor(o / Math.pow(2, baseMip)));
+            const baseMipSize = size.map(s => Math.max(Math.floor(s / Math.pow(2, baseMip)), 1));
+            const workgroupOffset = baseMipOffset.map(o => o / 64) as [number, number];
+            const dispatchDimensions = baseMipOffset.map((o, i) => ((o + baseMipSize[i] - 1) / 64) + 1 - workgroupOffset[i]) as [number, number];
+            const numWorkGroups = dispatchDimensions.reduce((product, v) => v * product, 1);
+
+            const metaBindGroup = this.createMetaBindGroup(device, {
+                workgroupOffset,
+                numWorkGroups,
+                numMips: numMipsThisPass
+            });
+
             // todo: handle missing pipeline
-            const pipeline = this.getOrCreatePipelines(target.format, filter, numMipsThisPass)!;
+            const pipeline = this.getOrCreatePipeline(target.format, filterCode, numMipsThisPass)!;
 
             const mipViews = Array(numMipsThisPass + 1).fill(0).map((_, i) => {
-                if (pass === 0 && i === 0) {
+                if (baseMip === 0 && i === 0) {
                     return texture.createView({
                         dimension: '2d-array',
                         baseMipLevel: 0,
@@ -833,7 +696,7 @@ class DevicePipelines {
             });
 
             const mipsBindGroup = device.createBindGroup({
-                layout: pipeline?.mipsLayout,
+                layout: pipeline.mipsLayout,
                 entries: mipViews.map((v, i) => {
                     return {
                         binding: i,
@@ -841,8 +704,8 @@ class DevicePipelines {
                     };
                 }),
             });
-            return new DownsamplingPassInner(pipeline.pipelines[pass], [mipsBindGroup, metaBindGroup], (pass === 0 || (pass < 2 && numPasses === 3)) ? dispatchDimensions : [1, 1, target.depthOrArrayLayers]);
-        });
+            passes.push(new DownsamplingPassInner(pipeline.pipelines, [mipsBindGroup, metaBindGroup], [...dispatchDimensions, Math.min(texture.depthOrArrayLayers, target.depthOrArrayLayers)]));
+        }
         return new DownsamplingPass(passes, target);
     }
 }
@@ -850,6 +713,14 @@ class DevicePipelines {
 export class GPUSinglePassDownsampler {
     private filters: Map<string, string>;
     private devicePipelines: WeakMap<GPUDevice, DevicePipelines>;
+
+    static preferredLimits(limits?: Record<string, number | GPUSize64>): Record<string, number | GPUSize64> {
+        if (!limits) {
+            limits = {};
+        }
+        limits.maxStorageTexturesPerShaderStage = Math.max(limits.maxStorageTexturesPerShaderStage ?? 6);
+        return limits;
+    }
 
     constructor(deviceConfig?: DeviceConfig) {
         this.filters = new Map([
@@ -859,6 +730,7 @@ export class GPUSinglePassDownsampler {
             [SPDFilters.MinMax, SPD_FILTER_MINMAX],
         ]);
         this.devicePipelines = new Map();
+
         if (deviceConfig) {
             this.prepareDevicePipelines(deviceConfig);
         }
@@ -873,6 +745,10 @@ export class GPUSinglePassDownsampler {
             this.devicePipelines.set(device, new DevicePipelines(device));
         }
         return this.devicePipelines.get(device);
+    }
+
+    deregisterDevice(device: GPUDevice) {
+        this.devicePipelines.delete(device);
     }
 
     /**
@@ -894,29 +770,23 @@ export class GPUSinglePassDownsampler {
 
     prepare(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): DownsamplingPass | undefined {
         const target = config?.target ?? texture;
-        const numMips = Math.min(Math.max(config?.numMips ?? target.mipLevelCount, 0), SPD_MAX_MIP_LEVELS);
         const filter = config?.filter ?? SPDFilters.Average;
-        const offset = (config?.offset ?? [0, 0]).map((o, d) => Math.max(0, Math.min(o, (d === 0 ? texture.width : texture.height) - 1)));
-        const size = (config?.size ?? [texture.width, texture.height]).map((s, d) => Math.max(0, Math.min(s, (d === 0 ? texture.width : texture.height) - offset[d])));
+        const offset = (config?.offset ?? [0, 0]).map((o, d) => Math.max(0, Math.min(o, (d === 0 ? texture.width : texture.height) - 1))) as [number, number];
+        const size = (config?.size ?? [texture.width, texture.height]).map((s, d) => Math.max(0, Math.min(s, (d === 0 ? texture.width : texture.height) - offset[d]))) as [number, number];
+        const numMips = Math.min(Math.max(config?.numMips ?? target.mipLevelCount, 0), 1 + Math.log2(Math.max(...size)));
 
-        // todo: validate target size & array layers
-
-        const workgroupOffset = offset.map(o => o / 64);
-        const dispatchDimensions = offset.map((o, i) => ((o + size[i] - 1) / 64) + 1 - workgroupOffset[i]) as [number, number, number];
-        const numWorkGroups = dispatchDimensions.reduce((product, v) => v * product, 1);
-
-        const meta = {
-            invInputSize: size.map(s => 1.0 / s) as [number, number],
-            workgroupOffset: workgroupOffset as [number, number],
-            numWorkGroups,
-            numMips,
-        };
-
+        if (numMips < 2) {
+            console.warn(`[GPUSinglePassDownsampler::prepare]: no mips to create (numMips = ${numMips})`);
+            return undefined;
+        }
         if (!SUPPORTED_FORMATS.has(target.format)) {
             throw new Error(`[GPUSinglePassDownsampler::prepare]: format ${target.format} not supported`);
         }
         if (target.format === 'bgra8unorm' && !device.features.has('bgra8unorm-storage')) {
             throw new Error(`[GPUSinglePassDownsampler::prepare]: format ${target.format} not supported without feature 'bgra8unorm-storage' enabled`);
+        }
+        if (target.width < Math.max(1, Math.floor(size[0] / 2)) || target.height < Math.max(1, Math.floor(size[1] / 2))) {
+            throw new Error(`[GPUSinglePassDownsampler::prepare]: target too small (${[target.width, target.height]}) for input size ${size}`);
         }
         if (!this.filters.has(filter)) {
             console.warn(`[GPUSinglePassDownsampler::prepare]: unknown filter ${filter}, falling back to average`);
@@ -926,7 +796,7 @@ export class GPUSinglePassDownsampler {
         }
         const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
 
-        return this.getOrCreateDevicePipelines(device)?.preparePass(texture, target, filterCode, dispatchDimensions, meta);
+        return this.getOrCreateDevicePipelines(device)?.preparePass(texture, target, filterCode, offset, size, numMips);
     }
 
     generateMipMaps(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): boolean {

@@ -12,7 +12,6 @@
         <label for="texture">Upload texture</label>
         <input id="texture" type="file" accept="image/*">
     </div>
-    <canvas></canvas>
     <div>
         <div>
             Mip Level
@@ -25,14 +24,14 @@
             <output>0</output>
         </div>
     </div>
+    <canvas></canvas>
     <script type="module">
         import {GPUSinglePassDownsampler} from './dist/index.js';
         
         async function main() {
             const adapter = await navigator.gpu.requestAdapter();
-            // todo: default storage texture limit
-            const device = await adapter.requestDevice({requiredLimits: { maxStorageTexturesPerShaderStage: 6 }});
-            
+            const device = await adapter.requestDevice({requiredLimits: GPUSinglePassDownsampler.preferredLimits()});
+
             const canvas = document.querySelector('canvas');
             const context = canvas.getContext('webgpu');
             const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
@@ -82,7 +81,6 @@
             });
 
             const downsampler = new GPUSinglePassDownsampler();
-            console.log(downsampler);
 
             const buffer = device.createBuffer({
                 size: 8,
