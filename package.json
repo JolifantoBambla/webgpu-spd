@@ -1,5 +1,5 @@
 {
-  "name": "gpu-spd",
+  "name": "webgpu-spd",
   "version": "1.0.0",
   "description": "A port of AMD's single-pass downsampling for WebGPU",
   "main": "dist/index.js",
@@ -16,7 +16,7 @@
     "url": "git+https://github.com/JolifantoBambla/gpu-spd-js.git"
   },
   "keywords": [
-    "WebGPU"
+    "WebGPU", "Mipmap", "GPU", "Graphics"
   ],
   "author": "Lukas Herzberger",
   "license": "MIT",
@@ -26,6 +26,7 @@
   "homepage": "https://github.com/JolifantoBambla/gpu-spd-js#readme",
   "devDependencies": {
     "@webgpu/types": "^0.1.40",
+    "typedoc": "^0.25.13",
     "typescript": "^5.4.5"
   }
 }

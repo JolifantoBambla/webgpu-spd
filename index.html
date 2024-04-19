@@ -26,11 +26,11 @@
     </div>
     <canvas></canvas>
     <script type="module">
-        import {GPUSinglePassDownsampler} from './dist/index.js';
+        import {WebGPUSinglePassDownsampler} from './dist/index.js';
         
         async function main() {
             const adapter = await navigator.gpu.requestAdapter();
-            const device = await adapter.requestDevice({requiredLimits: GPUSinglePassDownsampler.preferredLimits()});
+            const device = await adapter.requestDevice({requiredLimits: WebGPUSinglePassDownsampler.setPreferredLimits()});
 
             const canvas = document.querySelector('canvas');
             const context = canvas.getContext('webgpu');
@@ -80,7 +80,7 @@
                 },
             });
 
-            const downsampler = new GPUSinglePassDownsampler();
+            const downsampler = new WebGPUSinglePassDownsampler();
 
             const buffer = device.createBuffer({
                 size: 8,
@@ -117,7 +117,7 @@
             arrayLayerSlider.addEventListener('input', _ => render(mipLevelSlider.value, arrayLayerSlider.value));
 
             const onNewTexture = texture => {
-                if (!downsampler.generateMipMaps(device, texture)) {
+                if (!downsampler.generateMipmaps(device, texture)) {
                     console.warn(`could not downsample texture generated from ${textureUrl}`);
                     return;
                 }
@@ -162,7 +162,7 @@
                         });
                         device.queue.copyExternalImageToTexture({ source, }, { texture }, { width: source.width, height: source.height });
                         onNewTexture(texture);
-                    });
+                    }).catch(console.error);
                 }
             });
         }

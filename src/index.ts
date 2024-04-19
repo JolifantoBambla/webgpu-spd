@@ -196,12 +196,6 @@ fn spd_reduce_load_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
 
 // Main logic ---------------------------------------------------------------------------------------------------------
 
-fn spd_populate_intermediate(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, slice: u32) {
-    if local_invocation_index < 4u {
-        spd_store_intermediate(x + y * 2, 0, load_src_image(workgroup_id.xy * 2 + vec2<u32>(x, y), slice));
-    }
-}
-
 fn spd_downsample_mips_0_1(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
     var v: array<vec4<f32>, 4>;
 
@@ -465,16 +459,34 @@ const SUPPORTED_FORMATS: Set<string> = new Set([
     'rgba32float',
 ]);
 
-const SPD_MAX_MIP_LEVELS: number = 12; // can generate 12 mips, total mips are 13
-
+/**
+ * The names of all predefined filters of {@link WebGPUSinglePassDownsampler}.
+ * Custom ones can be registered with an instance of {@link WebGPUSinglePassDownsampler} using @see WebGPUSinglePassDownsampler.registerFilter
+ */
 export enum SPDFilters {
+    /**
+     * Takes the channel-wise averages of 4 pixels
+     */
     Average = 'average',
+
+    /**
+     * Takes the channel-wise minimum of 4 pixels.
+     */
     Min = 'min',
+    
+    /**
+     * Takes the channel-wise maximum of 4 pixels.
+     */
     Max = 'max',
+
+    /**
+     * Takes the minimum of the red channel and the maximum of the red and green channel and stores the result in the red and green channel respectively.
+     * This really only makes sense for single-channel input textures (where only the red channel holds any data), e.g., for generating a min-max pyramid of a depth buffer.
+     */
     MinMax = 'minmax',
 }
 
-class DownsamplingPassInner {
+class SPDPassInner {
     constructor(private pipeline: GPUComputePipeline, private bindGroups: Array<GPUBindGroup>, private dispatchDimensions: [number, number, number]) {}
     encode(computePass: GPUComputePassEncoder) {
         computePass.setPipeline(this.pipeline);
@@ -485,19 +497,61 @@ class DownsamplingPassInner {
     }
 }
 
-export class DownsamplingPass {
-    constructor(private passes: Array<DownsamplingPassInner>, readonly target: GPUTexture) {}
-    encode(computePass: GPUComputePassEncoder): GPUComputePassEncoder {
-        this.passes.forEach(p => p.encode(computePass));
-        return computePass;
+export class SPDPass {
+    /**
+     * The texture the mipmaps will be written to by this {@link SPDPass}, once {@link SPDPass.encode} is called.
+     */
+    readonly target: GPUTexture
+
+    /** @ignore */
+    constructor(private passes: Array<SPDPassInner>, target: GPUTexture) {
+        this.target = target;
+    }
+    /**
+     * Encodes the configured mipmap generation pass with the given {@link GPUComputePassEncoder}.
+     * @param computePassEncoder the {@link GPUComputePassEncoder} to encode this mipmap generation pass with.
+     * @returns the {@link computePassEncoder}
+     */
+    encode(computePassEncoder: GPUComputePassEncoder): GPUComputePassEncoder {
+        this.passes.forEach(p => p.encode(computePassEncoder));
+        return computePassEncoder;
     }
 }
 
-export interface GPUDownsamplingPassConfig {
+export interface SPDPassConfig {
+    /**
+     * The name of the filter to use for downsampling the given texture.
+     * Should be one of the filters registered with @type {WebGPUSinglePassDownsampler}.
+     * Defaults to {@link SPDFilters.Average}
+     */
     filter?: string,
+
+    /**
+     * The target texture the generated mipmaps are written to.
+     * Its usage must include {@link GPUTextureUsage.STORAGE_BINDING}.
+     * Its format must support {@link GPUStorageTextureAccess:"write-only"}.
+     * Its size must be big enough to store the first mip level generated for the input texture.
+     * It must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}.
+     * Defaults to the given input texture.
+     */
     target?: GPUTexture,
+
+    /**
+     * The upper left corner of the image region mipmaps should be generated for.
+     * Defaults to [0,0].
+     */
     offset?: [number, number],
+
+    /**
+     * The size of the image reagion mipmaps should be generated for.
+     * Default to [texture.width - 1 - offset[0], texture.height - 1 - offset[1]]
+     */
     size?: [number, number],
+
+    /**
+     * The number of mipmaps to generate.
+     * Defaults to target.mipLevelCount
+     */
     numMips?: number,
 }
 
@@ -507,33 +561,40 @@ interface GPUDownsamplingMeta {
     numMips: number,
 }
 
-class Pipeline {
+class SPDPipeline {
     constructor(readonly mipsLayout: GPUBindGroupLayout, readonly pipelines: GPUComputePipeline) {}
 }
 
-export interface PipelineConfig {
+export interface SPDPrepareFormatDescriptor {
+    /**
+     * The texture format to prepare downsampling pipelines for.
+     */
     format: GPUTextureFormat,
-    filter?: Array<string>,
+
+    /**
+     * The names of downsampling filters that to prepare downsampling pipelines for the given {@link format} for.
+     * Defaults to {@link SPDFilters.Average}.
+     */
+    filters?: Set<string>,
 }
 
-export interface DeviceConfig {
+export interface SPDPrepareDeviceDescriptor {
+    /**
+     * The device to prepare downsampling pipelines for.
+     */
     device: GPUDevice,
-    pipelineConfigs?: Array<PipelineConfig>,
-}
 
-interface Config {
-    filterCode: string,
-    target: GPUTexture,
-    offset: [number, number],
-    size: [number, number],
-    numMips: number,
+    /**
+     * The formats to prepare downsampling pipelines for.
+     */
+    formats?: Array<SPDPrepareFormatDescriptor>,
 }
 
 class DevicePipelines {
     private device: WeakRef<GPUDevice>;
     private maxMipsPerPass: number;
     private internalResourcesBindGroupLayout: GPUBindGroupLayout;
-    private pipelines: Map<GPUTextureFormat, Map<string, Map<number, Pipeline>>>;
+    private pipelines: Map<GPUTextureFormat, Map<string, Map<number, SPDPipeline>>>;
 
     constructor(device: GPUDevice) {
         this.device = new WeakRef(device);
@@ -552,9 +613,9 @@ class DevicePipelines {
         });
     }
 
-    preparePipelines(pipelineConfigs?: Array<PipelineConfig>) {
+    preparePipelines(pipelineConfigs?: Array<SPDPrepareFormatDescriptor>) {
         pipelineConfigs?.map(c => {
-            (c.filter ?? [SPD_FILTER_AVERAGE]).map(f => {
+            Array.from(c.filters ?? [SPD_FILTER_AVERAGE]).map(f => {
                 for (let i = 0; i < this.maxMipsPerPass; ++i) {
                     this.getOrCreatePipeline(c.format, f, i + 1);
                 }
@@ -563,7 +624,7 @@ class DevicePipelines {
         });
     }
 
-    private createPipeline(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): Pipeline | undefined {
+    private createPipeline(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): SPDPipeline | undefined {
         const device = this.device.deref();
         if (!device) {
             return undefined;
@@ -595,7 +656,7 @@ class DevicePipelines {
             code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass)),
         });
 
-        return new Pipeline(
+        return new SPDPipeline(
             mipsBindGroupLayout,
             device.createComputePipeline({
                 compute: {
@@ -612,7 +673,7 @@ class DevicePipelines {
         );
     }
 
-    private getOrCreatePipeline(targetFormat: GPUTextureFormat, filterCode: string, numMipsToCreate: number): Pipeline | undefined {
+    private getOrCreatePipeline(targetFormat: GPUTextureFormat, filterCode: string, numMipsToCreate: number): SPDPipeline | undefined {
         if (!this.pipelines.has(targetFormat)) {
             this.pipelines.set(targetFormat, new Map());
         }
@@ -649,7 +710,7 @@ class DevicePipelines {
         });
     }
 
-    preparePass(texture: GPUTexture, target: GPUTexture, filterCode: string, offset: [number, number], size: [number, number], numMipsTotal: number): DownsamplingPass | undefined {
+    preparePass(texture: GPUTexture, target: GPUTexture, filterCode: string, offset: [number, number], size: [number, number], numMipsTotal: number): SPDPass | undefined {
         const device = this.device.deref();
         if (!device) {
             return undefined;
@@ -704,17 +765,38 @@ class DevicePipelines {
                     };
                 }),
             });
-            passes.push(new DownsamplingPassInner(pipeline.pipelines, [mipsBindGroup, metaBindGroup], [...dispatchDimensions, Math.min(texture.depthOrArrayLayers, target.depthOrArrayLayers)]));
+            passes.push(new SPDPassInner(pipeline.pipelines, [mipsBindGroup, metaBindGroup], [...dispatchDimensions, Math.min(texture.depthOrArrayLayers, target.depthOrArrayLayers)]));
         }
-        return new DownsamplingPass(passes, target);
+        return new SPDPass(passes, target);
     }
 }
 
-export class GPUSinglePassDownsampler {
+/**
+ * Returns the maximum number of mip levels for a given n-dimensional size.
+ * @param size the size to compute the maximum number of mip levels for
+ * @returns the maximum number of mip levels for the given size
+ */
+export function maxMipLevelCount(...size: number[]): number {
+    return 1 + Math.log2(Math.max(0, ...size));
+}
+
+/**
+ * A helper class for downsampling a 2D {@link GPUTexture} (array) using as few passes as possible on a {@link GPUDevice} depending on its {@link GPUSupportedLimits}.
+ * Up to 6 mip levels can be generated within a single pass, if {@link GPUSupportedLimits.maxStorageTexturesPerShaderStage} supports it.
+ */
+export class WebGPUSinglePassDownsampler {
     private filters: Map<string, string>;
     private devicePipelines: WeakMap<GPUDevice, DevicePipelines>;
 
-    static preferredLimits(limits?: Record<string, number | GPUSize64>): Record<string, number | GPUSize64> {
+    /**
+     * Sets the preferred device limits for {@link WebGPUSinglePassDownsampler} in a given record of limits.
+     * Existing preferred device limits are either increased or left untouched.
+     * If {@link limits} is undefined, creates a new record of preferred device limits for {@link WebGPUSinglePassDownsampler}.
+     * The result can be used to set {@link GPUDeviceDescriptor.requiredLimits} when requesting a device.
+     * @param limits a record of device limits set to update with the preferred limits for {@link WebGPUSinglePassDownsampler}
+     * @returns the updated or created set of device limits with all preferred limits for {@link WebGPUSinglePassDownsampler} set
+     */
+    static setPreferredLimits(limits?: Record<string, number | GPUSize64>): Record<string, number | GPUSize64> {
         if (!limits) {
             limits = {};
         }
@@ -722,7 +804,14 @@ export class GPUSinglePassDownsampler {
         return limits;
     }
 
-    constructor(deviceConfig?: DeviceConfig) {
+    /**
+     * Creates a new {@link WebGPUSinglePassDownsampler}.
+     * On its own, {@link WebGPUSinglePassDownsampler} does not allocate any GPU resources.
+     * Optionally, prepare GPU resources for a given {@link SPDPrepareDeviceDescriptor}.
+     * @param prepareDescriptor an optional descriptor for preparing GPU resources
+     * @see WebGPUSinglePassDownsampler.prepareDeviceResources
+     */
+    constructor(prepareDescriptor?: SPDPrepareDeviceDescriptor) {
         this.filters = new Map([
             [SPDFilters.Average, SPD_FILTER_AVERAGE],
             [SPDFilters.Min, SPD_FILTER_MIN],
@@ -731,13 +820,22 @@ export class GPUSinglePassDownsampler {
         ]);
         this.devicePipelines = new Map();
 
-        if (deviceConfig) {
-            this.prepareDevicePipelines(deviceConfig);
+        if (prepareDescriptor) {
+            this.prepareDeviceResources(prepareDescriptor);
         }
     }
 
-    prepareDevicePipelines(deviceConfig: DeviceConfig) {
-        this.getOrCreateDevicePipelines(deviceConfig.device!)?.preparePipelines(deviceConfig?.pipelineConfigs);
+    /**
+     * Prepares GPU resources required by {@link WebGPUSinglePassDownsampler} to downsample textures for a given {@link SPDPrepareDeviceDescriptor}.
+     * @param prepareDescriptor a descriptor for preparing GPU resources
+     */
+    prepareDeviceResources(prepareDescriptor: SPDPrepareDeviceDescriptor) {
+        this.getOrCreateDevicePipelines(prepareDescriptor.device)?.preparePipelines(prepareDescriptor?.formats?.map(format => {
+            return {
+                ...format,
+                filters: new Set(Array.from(format.filters ?? []).map(filter => this.filters.get(filter) ?? SPD_FILTER_AVERAGE)),
+            };
+        }));
     }
 
     private getOrCreateDevicePipelines(device: GPUDevice): DevicePipelines | undefined {
@@ -747,6 +845,10 @@ export class GPUSinglePassDownsampler {
         return this.devicePipelines.get(device);
     }
 
+    /**
+     * Deregisters all resources stored for a given device.
+     * @param device the device resources should be deregistered for
+     */
     deregisterDevice(device: GPUDevice) {
         this.devicePipelines.delete(device);
     }
@@ -768,7 +870,19 @@ export class GPUSinglePassDownsampler {
         this.filters.set(name, wgsl);
     }
 
-    prepare(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): DownsamplingPass | undefined {
+    /**
+     * Prepares a pass to downsample a texture.
+     * The produces {@link SPDPass} can be used multiple time to repeatedly downsampling a texture, e.g., for downsampling the depth buffer each frame. 
+     * For one-time use, @see WebGPUSinglePassDownsampler.generateMipmaps can be used instead.
+     * @param device the device the {@link SPDPass} should be prepared for
+     * @param texture the texture that is to be processed by the {@link SPDPass}. Must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}.
+     * @param config the config for the {@link SPDPass}
+     * @returns the prepared {@link SPDPass} or undefined if preparation failed or if no mipmaps would be generated.
+     * @throws if the {@link GPUTextureFormat} of {@link SPDPassConfig.target} is not supported (does not support {@link GPUStorageTextureAccess:"write-only"} on the given {@link device}).
+     * @throws if the size of {@link SPDPassConfig.target} is too small to store the first mip level generated for {@link texture}
+     * @throws if {@link texture} or {@link SPDPassConfig.target} is not a 2d texture.
+     */
+    preparePass(device: GPUDevice, texture: GPUTexture, config?: SPDPassConfig): SPDPass | undefined {
         const target = config?.target ?? texture;
         const filter = config?.filter ?? SPDFilters.Average;
         const offset = (config?.offset ?? [0, 0]).map((o, d) => Math.max(0, Math.min(o, (d === 0 ? texture.width : texture.height) - 1))) as [number, number];
@@ -788,6 +902,9 @@ export class GPUSinglePassDownsampler {
         if (target.width < Math.max(1, Math.floor(size[0] / 2)) || target.height < Math.max(1, Math.floor(size[1] / 2))) {
             throw new Error(`[GPUSinglePassDownsampler::prepare]: target too small (${[target.width, target.height]}) for input size ${size}`);
         }
+        if (target.dimension !== '2d' || texture.dimension !== '2d') {
+            throw new Error('[GPUSinglePassDownsampler::prepare]: texture or target is not a 2d texture');
+        }
         if (!this.filters.has(filter)) {
             console.warn(`[GPUSinglePassDownsampler::prepare]: unknown filter ${filter}, falling back to average`);
         }
@@ -799,8 +916,18 @@ export class GPUSinglePassDownsampler {
         return this.getOrCreateDevicePipelines(device)?.preparePass(texture, target, filterCode, offset, size, numMips);
     }
 
-    generateMipMaps(device: GPUDevice, texture: GPUTexture, config?: GPUDownsamplingPassConfig): boolean {
-        const pass = this.prepare(device, texture, config);
+    /**
+     * Generates mipmaps for the given texture.
+     * For textures that will be downsampled more than once, consider generating a {@link SPDPass} using @see WebGPUSinglePassDownsampler.preparePass and calling its {@link SPDPass.encode} method.
+     * This way, allocated GPU resources for downsampling the texture can be reused.
+     * @param device the device to use for downsampling the texture
+     * @param texture the texture to generate mipmaps for. Must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}.
+     * @param config the config for mipmap generation
+     * @returns true if mipmaps were generated, false otherwise
+     * @throws if @see WebGPUSinglePassDownsampler.preparePass threw an error.
+     */
+    generateMipmaps(device: GPUDevice, texture: GPUTexture, config?: SPDPassConfig): boolean {
+        const pass = this.preparePass(device, texture, config);
         if (!pass) {
             return false;
         } else {
