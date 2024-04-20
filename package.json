@@ -13,7 +13,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JolifantoBambla/gpu-spd-js.git"
+    "url": "git+https://github.com/JolifantoBambla/webgpu-spd.git"
   },
   "keywords": [
     "WebGPU", "Mipmap", "GPU", "Graphics"
@@ -21,9 +21,9 @@
   "author": "Lukas Herzberger",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/JolifantoBambla/gpu-spd-js/issues"
+    "url": "https://github.com/JolifantoBambla/webgpu-spd/issues"
   },
-  "homepage": "https://github.com/JolifantoBambla/gpu-spd-js#readme",
+  "homepage": "https://github.com/JolifantoBambla/webgpu-spd#readme",
   "devDependencies": {
     "@webgpu/types": "^0.1.40",
     "typedoc": "^0.25.13",
