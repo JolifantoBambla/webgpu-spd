@@ -9,10 +9,56 @@
 
 <body>
     <div>
-        <label for="texture">Upload texture</label>
-        <input id="texture" type="file" accept="image/*">
+        <h3>Input</h3>
+        <div>
+            <h4>Downsample options</h4>
+            <div>
+                <fieldset>
+                    <legend>Filter:</legend>
+                    <div>
+                        <input id="average" name="filter" type="radio" checked>
+                        <label for="average">Average</label>
+                    </div>
+                    <div>
+                        <input id="min" name="filter" type="radio">
+                        <label for="min">Min</label>
+                    </div>
+                    <div>
+                        <input id="max" name="filter" type="radio">
+                        <label for="max">Max</label>
+                    </div>
+                    <div>
+                        <input id="minmax" name="filter" type="radio">
+                        <label for="minmax">MinMax</label>
+                    </div>
+                </fieldset>
+            </div>
+        </div>
+        <div>
+            <h4>Upload texture</h4>
+            <input id="texture" type="file" accept="image/*">
+        </div>
+        <div>
+            <h4>Checkerboard</h4>
+            <div>
+                <label for="checkerboardSize">Size</label>
+                <input id="checkerboardSize" type="number" value="512" min="32", max="512">
+            </div>
+            <div>
+                <label for="checkerboardNumChannels">Num. channels</label>
+                <input id="checkerboardNumChannels" type="number" value="4" min="1", max="4">
+            </div>
+            <div>
+                <label for="checkerboardNumArrayLayers">Num. array layers</label>
+                <input id="checkerboardNumArrayLayers" type="number" value="16" min="1", max="16">
+            </div>
+            <div>
+                <input id="generateCheckerboardButton" type="button" value="Generate Checkerboard">
+            </div>
+        </div>
     </div>
     <div>
+        <h3>Display options</h4>
         <div>
             Mip Level
             <input id="mipLevelSlider" type="range" min="0" max="0" value="0" oninput="this.nextElementSibling.value = this.value">
@@ -26,8 +72,39 @@
     </div>
     <canvas></canvas>
     <script type="module">
-        import {WebGPUSinglePassDownsampler} from './dist/index.js';
+        import { WebGPUSinglePassDownsampler, maxMipLevelCount } from './dist/index.js';
         
+        function makeCheckerboardTextureData(size, numChannels, tileSize = 16, offset = 0) {
+            const data = new Float32Array(size * size * numChannels);
+            for (let i = 0; i < size * size; ++i) {
+                const x = (offset + i) % size;
+                const y = Math.trunc(i / size);
+                const v = (Math.trunc(x / tileSize) + Math.trunc(y / tileSize)) % 2;
+                for (let c = 0; c < numChannels; ++c) {
+                    data[i * numChannels + c] = c === 3 ? 1.0 : v;
+                }
+            }
+            return data;
+        }
+
+        function makeCheckerboardTexture(device, size, numChannels, arrayLayers = 1, tileSize = 16) {
+            const texture = device.createTexture({
+                format: `${['r', 'rg', 'rgb', 'rgba'][numChannels - 1]}32float`,
+                size: [size, size, arrayLayers],
+                mipLevelCount: maxMipLevelCount(size),
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST,
+            });
+            for (let i = 0; i < arrayLayers; ++i) {
+                device.queue.writeTexture(
+                    { texture, origin: [0, 0, i] },
+                    makeCheckerboardTextureData(size, numChannels, tileSize, i),
+                    { bytesPerRow: size * numChannels * 4, rowsPerImage: size, },
+                    [size, size],
+                );
+            }
+            return texture;
+        }
+
         async function main() {
             const adapter = await navigator.gpu.requestAdapter();
             const device = await adapter.requestDevice({requiredLimits: WebGPUSinglePassDownsampler.setPreferredLimits()});
@@ -116,8 +193,10 @@
             mipLevelSlider.addEventListener('input', _ => render(mipLevelSlider.value, arrayLayerSlider.value));
             arrayLayerSlider.addEventListener('input', _ => render(mipLevelSlider.value, arrayLayerSlider.value));
 
+            const filterRadio = Array.from(document.getElementsByName('filter'));
+
             const onNewTexture = texture => {
-                if (!downsampler.generateMipmaps(device, texture)) {
+                if (!downsampler.generateMipmaps(device, texture, { filter: filterRadio.filter(f => f.checked)[0].id })) {
                     console.warn(`could not downsample texture generated from ${textureUrl}`);
                     return;
                 }
@@ -165,6 +244,16 @@
                     }).catch(console.error);
                 }
             });
+
+            const checkerboardSize = document.getElementById('checkerboardSize');
+            const checkerboardNumChannels = document.getElementById('checkerboardNumChannels');
+            const checkerboardNumArrayLayers = document.getElementById('checkerboardNumArrayLayers');
+            const generateCheckerboardButton = document.getElementById('generateCheckerboardButton');
+            generateCheckerboardButton.addEventListener('click', _ => {
+                const numChannels = checkerboardNumChannels.value == 3 ? 4 : checkerboardNumChannels.value;
+                const texture = makeCheckerboardTexture(device, checkerboardSize.value, numChannels, checkerboardNumArrayLayers.value);
+                onNewTexture(texture);
+            })
         }
         main();
     </script>

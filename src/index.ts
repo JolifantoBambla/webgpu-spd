@@ -514,6 +514,8 @@ export class SPDPass {
      */
     encode(computePassEncoder: GPUComputePassEncoder): GPUComputePassEncoder {
         this.passes.forEach(p => p.encode(computePassEncoder));
+        computePassEncoder.setBindGroup(0, null);
+        computePassEncoder.setBindGroup(1, null);
         return computePassEncoder;
     }
 }
