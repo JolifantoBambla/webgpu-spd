@@ -10,7 +10,7 @@ See [here](https://jolifantobambla.github.io/webgpu-spd-js).
 
 ### From GitHub
 ```js
-import { WebGPUSinglePassDownsampler } from 'https://raw.githubusercontent.com/JolifantoBambla/webgpu-spd/1.0.0/dist/index.js';
+import { WebGPUSinglePassDownsampler } from 'https://jolifantobambla.github.io/webgpu-spd/1.0.0/dist/index.js';
 ```
 
 ### NPM
