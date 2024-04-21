@@ -4,7 +4,8 @@ name: Deploy docs
 on:
   # Runs on pushes targeting the default branch
   push:
-    branches: ["main"]
+    tags:        
+      - '*'
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -37,6 +38,10 @@ jobs:
         run: npm install
       - name: Build Docs
         run: npm run docs
+      - name: Publish dist folder with docs
+        run: |
+          mkdir -p docs/${{  github.ref_name }}
+          cp -r dist docs/${{  github.ref_name }}/dist
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
