@@ -4,7 +4,7 @@ A utility library for downsampling 2D GPUTextures in as few passes as possible.
 
 ## Docs
 
-See [here](https://jolifantobambla.github.io/webgpu-spd-js).
+See [here](https://jolifantobambla.github.io/webgpu-spd).
 
 ## Installation
 
