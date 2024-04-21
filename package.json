@@ -10,7 +10,6 @@
   ],
   "scripts": {
     "docs": "typedoc src/index.ts",
-    "lint": "eslint .",
     "build": "tsc"
   },
   "repository": {
