@@ -1,19 +1,17 @@
-function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE, numMips: number): string {
+function makeShaderCode(outputFormat, filterOp = SPD_FILTER_AVERAGE, numMips) {
     const mipsBindings = Array(numMips).fill(0)
         .map((_, i) => `@group(0) @binding(${i + 1}) var dst_mip_${i + 1}: texture_storage_2d_array<${outputFormat}, write>;`)
         .join('\n');
-
     // todo: get rid of this branching as soon as WGSL supports arrays of texture_storage_2d_array
     const mipsAccessorBody = Array(numMips).fill(0)
         .map((_, i) => {
-            return `${i === 0 ? '' : ' else '}if mip == ${i + 1} {
+        return `${i === 0 ? '' : ' else '}if mip == ${i + 1} {
                 textureStore(dst_mip_${i + 1}, uv, slice, value);
             }`;
-        })
+    })
         .join('');
-    const mipsAccessor = `fn store_dst_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {\n${mipsAccessorBody}\n}`
-
-    return /* wgsl */`
+    const mipsAccessor = `fn store_dst_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {\n${mipsAccessorBody}\n}`;
+    return /* wgsl */ `
     // This file is part of the FidelityFX SDK.
 //
 // Copyright (C) 2023 Advanced Micro Devices, Inc.
@@ -414,33 +412,28 @@ fn downsample(@builtin(local_invocation_index) local_invocation_index: u32, @bui
 }
     `;
 }
-
-const SPD_FILTER_AVERAGE: string = /* wgsl */`
+const SPD_FILTER_AVERAGE = /* wgsl */ `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return (v0 + v1 + v2 + v3) * 0.25;
 }
 `;
-
-const SPD_FILTER_MIN = /* wgsl */`
+const SPD_FILTER_MIN = /* wgsl */ `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return min(min(v0, v1), min(v2, v3));
 }
 `;
-
-const SPD_FILTER_MAX = /* wgsl */`
+const SPD_FILTER_MAX = /* wgsl */ `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     return max(max(v0, v1), max(v2, v3));
 }
 `;
-
-const SPD_FILTER_MINMAX = /* wgsl */`
+const SPD_FILTER_MINMAX = /* wgsl */ `
 fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
     let max4 = max(max(v0.xy, v1.xy), max(v2.xy, v3.xy));
     return vec4<f32>(min(min(v0.x, v1.x), min(v2.x, v3.x)), max(max4.x, max4.y), 0, 0);
 }
 `;
-
-const SUPPORTED_FORMATS: Set<string> = new Set([
+const SUPPORTED_FORMATS = new Set([
     'rgba8unorm',
     'rgba8snorm',
     'rgba8uint',
@@ -459,37 +452,40 @@ const SUPPORTED_FORMATS: Set<string> = new Set([
     'rgba32sint',
     'rgba32float',
 ]);
-
 /**
  * The names of all predefined filters of {@link WebGPUSinglePassDownsampler}.
  * Custom ones can be registered with an instance of {@link WebGPUSinglePassDownsampler} using {@link WebGPUSinglePassDownsampler.registerFilter}.
  */
-export enum SPDFilters {
+export var SPDFilters;
+(function (SPDFilters) {
     /**
      * Takes the channel-wise average of 4 pixels.
      */
-    Average = 'average',
-
+    SPDFilters["Average"] = "average";
     /**
      * Takes the channel-wise minimum of 4 pixels.
      */
-    Min = 'min',
-    
+    SPDFilters["Min"] = "min";
     /**
      * Takes the channel-wise maximum of 4 pixels.
      */
-    Max = 'max',
-
+    SPDFilters["Max"] = "max";
     /**
      * Takes the minimum of the red channel and the maximum of the red and green channel and stores the result in the red and green channel respectively.
      * This really only makes sense for single-channel input textures (where only the red channel holds any data), e.g., for generating a min-max pyramid of a depth buffer.
      */
-    MinMax = 'minmax',
-}
-
+    SPDFilters["MinMax"] = "minmax";
+})(SPDFilters || (SPDFilters = {}));
 class SPDPassInner {
-    constructor(private pipeline: GPUComputePipeline, private bindGroups: Array<GPUBindGroup>, private dispatchDimensions: [number, number, number]) {}
-    encode(computePass: GPUComputePassEncoder) {
+    pipeline;
+    bindGroups;
+    dispatchDimensions;
+    constructor(pipeline, bindGroups, dispatchDimensions) {
+        this.pipeline = pipeline;
+        this.bindGroups = bindGroups;
+        this.dispatchDimensions = dispatchDimensions;
+    }
+    encode(computePass) {
         computePass.setPipeline(this.pipeline);
         this.bindGroups.forEach((bindGroup, index) => {
             computePass.setBindGroup(index, bindGroup);
@@ -497,18 +493,18 @@ class SPDPassInner {
         computePass.dispatchWorkgroups(...this.dispatchDimensions);
     }
 }
-
 /**
  * A compute pass for downsampling a texture.
  */
 export class SPDPass {
+    passes;
     /**
      * The texture the mipmaps will be written to by this {@link SPDPass}, once {@link SPDPass.encode} is called.
      */
-    readonly target: GPUTexture
-
+    target;
     /** @ignore */
-    constructor(private passes: Array<SPDPassInner>, target: GPUTexture) {
+    constructor(passes, target) {
+        this.passes = passes;
         this.target = target;
     }
     /**
@@ -517,131 +513,59 @@ export class SPDPass {
      * @param computePassEncoder The {@link GPUComputePassEncoder} to encode this mipmap generation pass with.
      * @returns The {@link computePassEncoder}
      */
-    encode(computePassEncoder: GPUComputePassEncoder): GPUComputePassEncoder {
+    encode(computePassEncoder) {
         this.passes.forEach(p => p.encode(computePassEncoder));
         computePassEncoder.setBindGroup(0, null);
         computePassEncoder.setBindGroup(1, null);
         return computePassEncoder;
     }
 }
-
-/**
- * Configuration for {@link WebGPUSinglePassDownsampler.preparePass}.
- */
-export interface SPDPassConfig {
-    /**
-     * The name of the filter to use for downsampling the given texture.
-     * Should be one of the filters registered with {@link WebGPUSinglePassDownsampler}.
-     * Defaults to {@link SPDFilters.Average}.
-     */
-    filter?: string,
-
-    /**
-     * The target texture the generated mipmaps are written to.
-     * Its usage must include {@link GPUTextureUsage.STORAGE_BINDING}.
-     * Its format must support {@link GPUStorageTextureAccess:"write-only"}.
-     * Its size must be big enough to store the first mip level generated for the input texture.
-     * It must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}.
-     * Defaults to the given input texture.
-     */
-    target?: GPUTexture,
-
-    /**
-     * The upper left corner of the image region mipmaps should be generated for.
-     * Defaults to [0,0].
-     */
-    offset?: [number, number],
-
-    /**
-     * The size of the image reagion mipmaps should be generated for.
-     * Default to [texture.width - 1 - offset[0], texture.height - 1 - offset[1]].
-     */
-    size?: [number, number],
-
-    /**
-     * The number of mipmaps to generate.
-     * Defaults to target.mipLevelCount.
-     */
-    numMips?: number,
-}
-
-interface GPUDownsamplingMeta {
-    workgroupOffset: [number, number],
-    numWorkGroups: number,
-    numMips: number,
-}
-
 class SPDPipeline {
-    constructor(readonly mipsLayout: GPUBindGroupLayout, readonly pipelines: GPUComputePipeline) {}
+    mipsLayout;
+    pipelines;
+    constructor(mipsLayout, pipelines) {
+        this.mipsLayout = mipsLayout;
+        this.pipelines = pipelines;
+    }
 }
-
-export interface SPDPrepareFormatDescriptor {
-    /**
-     * The texture format to prepare downsampling pipelines for.
-     */
-    format: GPUTextureFormat,
-
-    /**
-     * The names of downsampling filters that to prepare downsampling pipelines for the given {@link format} for.
-     * Defaults to {@link SPDFilters.Average}.
-     */
-    filters?: Set<string>,
-}
-
-export interface SPDPrepareDeviceDescriptor {
-    /**
-     * The device to prepare downsampling pipelines for.
-     */
-    device: GPUDevice,
-
-    /**
-     * The formats to prepare downsampling pipelines for.
-     */
-    formats?: Array<SPDPrepareFormatDescriptor>,
-}
-
 class DevicePipelines {
-    private device: WeakRef<GPUDevice>;
-    private maxMipsPerPass: number;
-    private internalResourcesBindGroupLayout: GPUBindGroupLayout;
-    private pipelines: Map<GPUTextureFormat, Map<string, Map<number, SPDPipeline>>>;
-
-    constructor(device: GPUDevice) {
+    device;
+    maxMipsPerPass;
+    internalResourcesBindGroupLayout;
+    pipelines;
+    constructor(device) {
         this.device = new WeakRef(device);
         this.maxMipsPerPass = Math.min(device.limits.maxStorageTexturesPerShaderStage, 6);
         this.pipelines = new Map();
         this.internalResourcesBindGroupLayout = device.createBindGroupLayout({
             entries: [{
-                binding: 0,
-                visibility: GPUShaderStage.COMPUTE,
-                buffer: {
-                    type: 'uniform',
-                    hasDynamicOffset: false,
-                    minBindingSize: 16,
-                },
-            }],
+                    binding: 0,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: {
+                        type: 'uniform',
+                        hasDynamicOffset: false,
+                        minBindingSize: 16,
+                    },
+                }],
         });
     }
-
-    preparePipelines(pipelineConfigs?: Array<SPDPrepareFormatDescriptor>) {
+    preparePipelines(pipelineConfigs) {
         pipelineConfigs?.map(c => {
             Array.from(c.filters ?? [SPD_FILTER_AVERAGE]).map(f => {
                 for (let i = 0; i < this.maxMipsPerPass; ++i) {
                     this.getOrCreatePipeline(c.format, f, i + 1);
                 }
-            })
-            
+            });
         });
     }
-
-    private createPipeline(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): SPDPipeline | undefined {
+    createPipeline(targetFormat, filterCode, numMips) {
         const device = this.device.deref();
         if (!device) {
             return undefined;
         }
         const mipsBindGroupLayout = device.createBindGroupLayout({
             entries: Array(Math.min(numMips, this.maxMipsPerPass) + 1).fill(0).map((_, i) => {
-                const entry: GPUBindGroupLayoutEntry = {
+                const entry = {
                     binding: i,
                     visibility: GPUShaderStage.COMPUTE,
                 };
@@ -651,7 +575,8 @@ class DevicePipelines {
                         viewDimension: '2d-array',
                         multisampled: false,
                     };
-                } else {
+                }
+                else {
                     entry.storageTexture = {
                         access: 'write-only',
                         format: targetFormat,
@@ -661,29 +586,23 @@ class DevicePipelines {
                 return entry;
             })
         });
-
         const module = device.createShaderModule({
             code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass)),
         });
-
-        return new SPDPipeline(
-            mipsBindGroupLayout,
-            device.createComputePipeline({
-                compute: {
-                    module,
-                    entryPoint: 'downsample',
-                },
-                layout: device.createPipelineLayout({
-                    bindGroupLayouts: [
-                        mipsBindGroupLayout,
-                        this.internalResourcesBindGroupLayout,
-                    ],
-                }),
+        return new SPDPipeline(mipsBindGroupLayout, device.createComputePipeline({
+            compute: {
+                module,
+                entryPoint: 'downsample',
+            },
+            layout: device.createPipelineLayout({
+                bindGroupLayouts: [
+                    mipsBindGroupLayout,
+                    this.internalResourcesBindGroupLayout,
+                ],
             }),
-        );
+        }));
     }
-
-    private getOrCreatePipeline(targetFormat: GPUTextureFormat, filterCode: string, numMipsToCreate: number): SPDPipeline | undefined {
+    getOrCreatePipeline(targetFormat, filterCode, numMipsToCreate) {
         if (!this.pipelines.has(targetFormat)) {
             this.pipelines.set(targetFormat, new Map());
         }
@@ -698,8 +617,7 @@ class DevicePipelines {
         }
         return this.pipelines.get(targetFormat)?.get(filterCode)?.get(numMipsToCreate);
     }
-
-    private createMetaBindGroup(device: GPUDevice, meta: GPUDownsamplingMeta): GPUBindGroup {
+    createMetaBindGroup(device, meta) {
         const metaBuffer = device.createBuffer({
             size: 16,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
@@ -712,39 +630,33 @@ class DevicePipelines {
         return device.createBindGroup({
             layout: this.internalResourcesBindGroupLayout,
             entries: [{
-                binding: 0,
-                resource: {
-                    buffer: metaBuffer,
-                },
-            }]
+                    binding: 0,
+                    resource: {
+                        buffer: metaBuffer,
+                    },
+                }]
         });
     }
-
-    preparePass(texture: GPUTexture, target: GPUTexture, filterCode: string, offset: [number, number], size: [number, number], numMipsTotal: number): SPDPass | undefined {
+    preparePass(texture, target, filterCode, offset, size, numMipsTotal) {
         const device = this.device.deref();
         if (!device) {
             return undefined;
         }
-
         const passes = [];
         for (let baseMip = 0; baseMip < numMipsTotal - 1; baseMip += this.maxMipsPerPass) {
             const numMipsThisPass = Math.min(numMipsTotal - 1 - baseMip, this.maxMipsPerPass);
-
             const baseMipOffset = offset.map(o => Math.floor(o / Math.pow(2, baseMip)));
             const baseMipSize = size.map(s => Math.max(Math.floor(s / Math.pow(2, baseMip)), 1));
-            const workgroupOffset = baseMipOffset.map(o => o / 64) as [number, number];
-            const dispatchDimensions = baseMipOffset.map((o, i) => ((o + baseMipSize[i] - 1) / 64) + 1 - workgroupOffset[i]) as [number, number];
+            const workgroupOffset = baseMipOffset.map(o => o / 64);
+            const dispatchDimensions = baseMipOffset.map((o, i) => ((o + baseMipSize[i] - 1) / 64) + 1 - workgroupOffset[i]);
             const numWorkGroups = dispatchDimensions.reduce((product, v) => v * product, 1);
-
             const metaBindGroup = this.createMetaBindGroup(device, {
                 workgroupOffset,
                 numWorkGroups,
                 numMips: numMipsThisPass
             });
-
             // todo: handle missing pipeline
-            const pipeline = this.getOrCreatePipeline(target.format, filterCode, numMipsThisPass)!;
-
+            const pipeline = this.getOrCreatePipeline(target.format, filterCode, numMipsThisPass);
             const mipViews = Array(numMipsThisPass + 1).fill(0).map((_, i) => {
                 if (baseMip === 0 && i === 0) {
                     return texture.createView({
@@ -754,18 +666,18 @@ class DevicePipelines {
                         baseArrayLayer: 0,
                         arrayLayerCount: texture.depthOrArrayLayers,
                     });
-                } else {
+                }
+                else {
                     const mip = baseMip + i;
                     return target.createView({
                         dimension: '2d-array',
                         baseMipLevel: texture === target ? mip : mip - 1,
                         mipLevelCount: 1,
                         baseArrayLayer: 0,
-                        arrayLayerCount: target.depthOrArrayLayers, 
+                        arrayLayerCount: target.depthOrArrayLayers,
                     });
                 }
             });
-
             const mipsBindGroup = device.createBindGroup({
                 layout: pipeline.mipsLayout,
                 entries: mipViews.map((v, i) => {
@@ -780,24 +692,21 @@ class DevicePipelines {
         return new SPDPass(passes, target);
     }
 }
-
 /**
  * Returns the maximum number of mip levels for a given n-dimensional size.
  * @param size The size to compute the maximum number of mip levels for
  * @returns The maximum number of mip levels for the given size
  */
-export function maxMipLevelCount(...size: number[]): number {
+export function maxMipLevelCount(...size) {
     return 1 + Math.trunc(Math.log2(Math.max(0, ...size)));
 }
-
 /**
  * A helper class for downsampling 2D {@link GPUTexture} (& arrays) using as few passes as possible on a {@link GPUDevice} depending on its {@link GPUSupportedLimits}.
  * Up to 6 mip levels can be generated within a single pass, if {@link GPUSupportedLimits.maxStorageTexturesPerShaderStage} supports it.
  */
 export class WebGPUSinglePassDownsampler {
-    private filters: Map<string, string>;
-    private devicePipelines: WeakMap<GPUDevice, DevicePipelines>;
-
+    filters;
+    devicePipelines;
     /**
      * Sets the preferred device limits for {@link WebGPUSinglePassDownsampler} in a given record of limits.
      * Existing preferred device limits are either increased or left untouched.
@@ -806,14 +715,13 @@ export class WebGPUSinglePassDownsampler {
      * @param limits A record of device limits set to update with the preferred limits for {@link WebGPUSinglePassDownsampler}
      * @returns The updated or created set of device limits with all preferred limits for {@link WebGPUSinglePassDownsampler} set
      */
-    static setPreferredLimits(limits?: Record<string, number | GPUSize64>): Record<string, number | GPUSize64> {
+    static setPreferredLimits(limits) {
         if (!limits) {
             limits = {};
         }
         limits.maxStorageTexturesPerShaderStage = Math.max(limits.maxStorageTexturesPerShaderStage ?? 6);
         return limits;
     }
-
     /**
      * Creates a new {@link WebGPUSinglePassDownsampler}.
      * On its own, {@link WebGPUSinglePassDownsampler} does not allocate any GPU resources.
@@ -821,7 +729,7 @@ export class WebGPUSinglePassDownsampler {
      * @param prepareDescriptor An optional descriptor for preparing GPU resources
      * @see WebGPUSinglePassDownsampler.prepareDeviceResources
      */
-    constructor(prepareDescriptor?: SPDPrepareDeviceDescriptor) {
+    constructor(prepareDescriptor) {
         this.filters = new Map([
             [SPDFilters.Average, SPD_FILTER_AVERAGE],
             [SPDFilters.Min, SPD_FILTER_MIN],
@@ -829,17 +737,15 @@ export class WebGPUSinglePassDownsampler {
             [SPDFilters.MinMax, SPD_FILTER_MINMAX],
         ]);
         this.devicePipelines = new Map();
-
         if (prepareDescriptor) {
             this.prepareDeviceResources(prepareDescriptor);
         }
     }
-
     /**
      * Prepares GPU resources required by {@link WebGPUSinglePassDownsampler} to downsample textures for a given {@link SPDPrepareDeviceDescriptor}.
      * @param prepareDescriptor a descriptor for preparing GPU resources
      */
-    prepareDeviceResources(prepareDescriptor: SPDPrepareDeviceDescriptor) {
+    prepareDeviceResources(prepareDescriptor) {
         this.getOrCreateDevicePipelines(prepareDescriptor.device)?.preparePipelines(prepareDescriptor?.formats?.map(format => {
             return {
                 ...format,
@@ -847,53 +753,49 @@ export class WebGPUSinglePassDownsampler {
             };
         }));
     }
-
-    private getOrCreateDevicePipelines(device: GPUDevice): DevicePipelines | undefined {
+    getOrCreateDevicePipelines(device) {
         if (!this.devicePipelines.has(device)) {
             this.devicePipelines.set(device, new DevicePipelines(device));
         }
         return this.devicePipelines.get(device);
     }
-
     /**
      * Deregisters all resources stored for a given device.
      * @param device The device resources should be deregistered for
      */
-    deregisterDevice(device: GPUDevice) {
+    deregisterDevice(device) {
         this.devicePipelines.delete(device);
     }
-
     /**
      * Registers a new downsampling filter operation that can be injected into the downsampling shader for new pipelines.
-     * 
+     *
      * The given WGSL code must (at least) specify a function to reduce four values into one with the following name and signature:
-     * 
+     *
      *   spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32>
-     * 
+     *
      * @param name The unique name of the filter operation
      * @param wgsl The WGSL code to inject into the downsampling shader as the filter operation
      */
-    registerFilter(name: string, wgsl: string) {
+    registerFilter(name, wgsl) {
         if (this.filters.has(name)) {
             console.warn(`[GPUSinglePassDownsampler::registerFilter]: overriding existing filter '${name}'. Previously generated pipelines are not affected.`);
         }
         this.filters.set(name, wgsl);
     }
-
     /**
      * Prepares a pass to downsample a 2d texture / 2d texture array.
-     * The produced {@link SPDPass} can be used multiple times to repeatedly downsampling a texture, e.g., for downsampling the depth buffer each frame. 
+     * The produced {@link SPDPass} can be used multiple times to repeatedly downsampling a texture, e.g., for downsampling the depth buffer each frame.
      * For one-time use, {@link WebGPUSinglePassDownsampler.generateMipmaps} can be used instead.
-     * 
+     *
      * By default, the texture is downsampled `texture.mipLevelCount - 1` times using an averaging filter, i.e., 4 pixel values from the parent level are averaged to produce a single pixel in the current mip level.
      * This behavior can be configured using the optional {@link config} parameter.
      * For example, instead of writing the mip levels into the input texture itself, a separate target texture can be specified using {@link SPDPassConfig.target}.
      * Other configuration options include using a different (possibly custom) filter, only downsampling a subregion of the input texture, and limiting the number of mip levels to generate, e.g., if a min-max pyramid is only needed up to a certain tile resolution.
      * If the given filter does not exist, an averaging filter will be used as a fallback.
      * The image region to downsample and the number of mip levels to generate are clamped to the input texture's size, and the output texture's `mipLevelCount`.
-     * 
+     *
      * Depending on the number of mip levels to generate and the device's `maxStorageTexturesPerShaderStage` limit, the {@link SPDPass} will internally consist of multiple passes, each generating up to `min(maxStorageTexturesPerShaderStage, 6)` mip levels.
-     * 
+     *
      * @param device The device the {@link SPDPass} should be prepared for
      * @param texture The texture that is to be processed by the {@link SPDPass}. Must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}. Must support {@link GPUTextureUsage.TEXTURE_BINDING}, and, if no other target is given {@link GPUTextureUsage.STORAGE_BINDING}.
      * @param config The config for the {@link SPDPass}
@@ -905,13 +807,12 @@ export class WebGPUSinglePassDownsampler {
      * @see WebGPUSinglePassDownsampler.registerFilter
      * @see WebGPUSinglePassDownsampler.setPreferredLimits
      */
-    preparePass(device: GPUDevice, texture: GPUTexture, config?: SPDPassConfig): SPDPass | undefined {
+    preparePass(device, texture, config) {
         const target = config?.target ?? texture;
         const filter = config?.filter ?? SPDFilters.Average;
-        const offset = (config?.offset ?? [0, 0]).map((o, d) => Math.max(0, Math.min(o, (d === 0 ? texture.width : texture.height) - 1))) as [number, number];
-        const size = (config?.size ?? [texture.width, texture.height]).map((s, d) => Math.max(0, Math.min(s, (d === 0 ? texture.width : texture.height) - offset[d]))) as [number, number];
+        const offset = (config?.offset ?? [0, 0]).map((o, d) => Math.max(0, Math.min(o, (d === 0 ? texture.width : texture.height) - 1)));
+        const size = (config?.size ?? [texture.width, texture.height]).map((s, d) => Math.max(0, Math.min(s, (d === 0 ? texture.width : texture.height) - offset[d])));
         const numMips = Math.min(Math.max(config?.numMips ?? target.mipLevelCount, 0), maxMipLevelCount(...size));
-
         if (numMips < 2) {
             console.warn(`[GPUSinglePassDownsampler::prepare]: no mips to create (numMips = ${numMips})`);
             return undefined;
@@ -935,10 +836,8 @@ export class WebGPUSinglePassDownsampler {
             console.warn(`[GPUSinglePassDownsampler::prepare]: filter ${filter} makes no sense for one-component target format ${target.format}`);
         }
         const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
-
         return this.getOrCreateDevicePipelines(device)?.preparePass(texture, target, filterCode, offset, size, numMips);
     }
-
     /**
      * Generates mipmaps for the given texture.
      * For textures that will be downsampled more than once, consider generating a {@link SPDPass} using {@link WebGPUSinglePassDownsampler.preparePass} and calling its {@link SPDPass.encode} method.
@@ -950,11 +849,12 @@ export class WebGPUSinglePassDownsampler {
      * @throws If {@link WebGPUSinglePassDownsampler.preparePass} threw an error.
      * @see WebGPUSinglePassDownsampler.preparePass
      */
-    generateMipmaps(device: GPUDevice, texture: GPUTexture, config?: SPDPassConfig): boolean {
+    generateMipmaps(device, texture, config) {
         const pass = this.preparePass(device, texture, config);
         if (!pass) {
             return false;
-        } else {
+        }
+        else {
             const commandEncoder = device.createCommandEncoder();
             pass?.encode(commandEncoder.beginComputePass()).end();
             device.queue.submit([commandEncoder.finish()]);
@@ -962,4 +862,3 @@ export class WebGPUSinglePassDownsampler {
         }
     }
 }
-

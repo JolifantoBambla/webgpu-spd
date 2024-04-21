@@ -31,7 +31,47 @@
                         <input id="minmax" name="filter" type="radio">
                         <label for="minmax">MinMax</label>
                     </div>
+                    <div>
+                        <input id="custom" name="filter" type="radio">
+                        <label for="custom">Custom</label>
+                    </div>
                 </fieldset>
+                <div>
+                    <label for="customFilterCode">Custom filter code</label>
+                    <div>
+                        <textarea id="customFilterCode" type="text" cols="120" rows="1">fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> { return v0; }</textarea>
+                    </div>
+                </div>
+                <div>
+                    <h5>Region</h5>
+                    <div>
+                        <label for="offsetX">offset x</label>
+                        <input id="offsetX" type="number" step="1" min="0" value="0">
+                    </div>
+                    <div>
+                        <label for="offsetY">offset y</label>
+                        <input id="offsetY" type="number" step="1" min="0" value="0">
+                    </div>
+                    <div>
+                        <label for="useRoiSize">Use region size defined below</label>
+                        <input id="useRoiSize" type="checkbox">
+                    </div>
+                    <div>
+                        <label for="roiWidth">width</label>
+                        <input id="roiWidth" type="number" step="1" min="0" value="0">
+                    </div>
+                    <div>
+                        <label for="roiHeight">height</label>
+                        <input id="roiHeight" type="number" step="1" min="0" value="0">
+                    </div>
+                </div>
+                <div>
+                    <h5>Misc</h5>
+                    <div>
+                        <label for="intoTarget">Into separate target</label>
+                        <input id="intoTarget" type="checkbox">
+                    </div>
+                </div>
             </div>
         </div>
         <div>
@@ -42,15 +82,15 @@
             <h4>Checkerboard</h4>
             <div>
                 <label for="checkerboardSize">Size</label>
-                <input id="checkerboardSize" type="number" value="512" min="32", max="512">
+                <input id="checkerboardSize" type="number" value="512" step="1" min="32", max="512">
             </div>
             <div>
                 <label for="checkerboardNumChannels">Num. channels</label>
-                <input id="checkerboardNumChannels" type="number" value="4" min="1", max="4">
+                <input id="checkerboardNumChannels" type="number" value="4" step="1" min="1", max="4">
             </div>
             <div>
                 <label for="checkerboardNumArrayLayers">Num. array layers</label>
-                <input id="checkerboardNumArrayLayers" type="number" value="16" min="1", max="16">
+                <input id="checkerboardNumArrayLayers" type="number" value="16" step="1" min="1", max="16">
             </div>
             <div>
                 <input id="generateCheckerboardButton" type="button" value="Generate Checkerboard">
@@ -72,7 +112,7 @@
     </div>
     <canvas></canvas>
     <script type="module">
-        import { WebGPUSinglePassDownsampler, maxMipLevelCount } from './dist/index.js';
+        import { WebGPUSinglePassDownsampler, maxMipLevelCount } from '../dist/index.js';
         
         function makeCheckerboardTextureData(size, numChannels, tileSize = 16, offset = 0) {
             const data = new Float32Array(size * size * numChannels);
@@ -194,35 +234,59 @@
             arrayLayerSlider.addEventListener('input', _ => render(mipLevelSlider.value, arrayLayerSlider.value));
 
             const filterRadio = Array.from(document.getElementsByName('filter'));
+            const customFilterCode = document.getElementById('customFilterCode');
+
+            const offsetX = document.getElementById('offsetX');
+            const offsetY = document.getElementById('offsetY');
+            const useRoiSize = document.getElementById('useRoiSize');
+            const roiWidth = document.getElementById('roiWidth');
+            const roiHeight = document.getElementById('roiHeight');
+
+            const intoTarget = document.getElementById('intoTarget');
 
             const onNewTexture = texture => {
-                if (!downsampler.generateMipmaps(device, texture, { filter: filterRadio.filter(f => f.checked)[0].id })) {
+                if (filterRadio.filter(f => f.checked)[0].id === 'custom') {
+                    downsampler.registerFilter('custom', customFilterCode.value);
+                }
+                const target = !intoTarget.checked ? texture : device.createTexture({
+                    format: texture.format,
+                    mipLevelCount: texture.mipLevelCount - 1,
+                    size: [texture.width / 2, texture.height / 2, texture.depthOrArrayLayers],
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+                });
+                const config = {
+                    filter: filterRadio.filter(f => f.checked)[0].id,
+                    offset: [offsetX.value, offsetY.value],
+                    size: useRoiSize.checked ? [roiWidth.value, roiHeight.value] : [texture.width, texture.height],
+                    target,
+                };
+                if (!downsampler.generateMipmaps(device, texture, config)) {
                     console.warn(`could not downsample texture generated from ${textureUrl}`);
                     return;
                 }
 
-                canvas.width = texture.width;
-                canvas.height = texture.height;
+                canvas.width = target.width;
+                canvas.height = target.height;
 
                 bindGroup = device.createBindGroup({
                     layout: pipeline.getBindGroupLayout(0),
                     entries: [
                         {
                             binding: 0,
-                            resource: texture.createView({
+                            resource: target.createView({
                                 dimension: '2d-array',
-                                mipLevelCount: texture.mipLevelCount,
-                                arrayLayerCount: texture.arrayLayerCount,
+                                mipLevelCount: target.mipLevelCount,
+                                arrayLayerCount: target.depthOrArrayLayers,
                             }),
                         },
                         { binding: 1, resource: { buffer }},
                     ]
                 });
 
-                mipLevelSlider.max = texture.mipLevelCount - 1;
+                mipLevelSlider.max = target.mipLevelCount - 1;
                 mipLevelSlider.value = 0;
                 
-                arrayLayerSlider.max = texture.depthOrArrayLayers - 1;
+                arrayLayerSlider.max = target.depthOrArrayLayers - 1;
                 arrayLayerSlider.value = 0;
 
                 render();
