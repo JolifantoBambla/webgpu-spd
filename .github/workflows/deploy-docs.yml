@@ -40,8 +40,8 @@ jobs:
         run: npm run docs
       - name: Publish dist folder with docs
         run: |
-          mkdir -p docs/${{  github.ref_name }}
-          cp -r dist docs/${{  github.ref_name }}/dist
+          mkdir -p docs/1.0.0
+          cp -r dist docs/1.0.0/dist
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
