@@ -1,6 +1,6 @@
 # WebGPU SPD
 
-A utility library for downsampling 2D GPUTextures in as few passes as possible.
+A utility library for generating up to 6 mip levels for 2d textures & texture arrays in a single WebGPU compute pass.
 
 ## Docs
 
