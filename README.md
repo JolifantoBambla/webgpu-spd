@@ -1,4 +1,4 @@
-# WebGPU-SPD
+# WebGPU SPD
 
 A utility library for downsampling 2D GPUTextures in as few passes as possible.
 
@@ -19,6 +19,11 @@ npm install webgpu-spd
 ```
 
 ## Usage
+
+WebGPU SPD downsamples 2d textures and 2d texture arrays using compute pipelines generating up to 6 mip levels in a single pass (all array layers are processed in the same pass). The maximum number of mip levels that can be generated within a single pass depends on `maxStorageTexturesPerShaderStage` limit supported by the device used.
+Should the number of mip levels requested for a texture exceed this limit, multiple passes, generating up to `min(maxStorageTexturesPerShaderStage, 6)` mip levels each, will be used.
+The mip levels generated for a given input texture are either stored in the input texture itself or in a given target texture.
+This output texture must support `GPUTextureUsage.STORAGE_BINDING` with access mode `"write-only"`.
 
 #### Generate mipmaps
 ```js
@@ -58,7 +63,6 @@ device.queue.submit([commandEncoder.finish()]);
 ```
 
 #### Downsample into target
-
 ```js
 import { WebGPUSinglePassDownsampler, maxMipLevelCount } from 'webgpu-spd';
 
@@ -84,6 +88,11 @@ downsampler.generateMipmaps(device, texture, { target });
 ```
 
 #### Prepare pipelines for expected formats
+
+In the above examples, GPU resources, like compute pipelines and bindgroup layouts etc., are created on the fly the first time a new configuration of `GPUDevice`, `GPUTextureFormat`, and filter is needed.
+
+WebGPU SPD also supports allocating resources during setup, like this:
+
 ```js
 import { WebGPUSinglePassDownsampler, SPDFilters } from 'webgpu-spd';
 
