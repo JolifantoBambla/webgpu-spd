@@ -160,7 +160,7 @@ downsampleTexturePass = downsampler.preparePass(newDevice, texture);
 
 #### Use custom filters
 
-Custom filters of radius 1 can be registered with WebGPU SPD using `registerFilter`.
+Custom filters for downsampling a quad to a single pixel can be registered with WebGPU SPD using `registerFilter`.
 The given WGSL code must at least define a reduction function with the following name and signature:
 
 ```wgsl
