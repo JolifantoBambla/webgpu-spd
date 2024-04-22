@@ -1003,7 +1003,7 @@ export class WebGPUSinglePassDownsampler {
      * @param prepareDescriptor a descriptor for preparing GPU resources
      */
     prepareDeviceResources(prepareDescriptor: SPDPrepareDeviceDescriptor) {
-        this.getOrCreateDevicePipelines(prepareDescriptor.device)?.preparePipelines(prepareDescriptor?.formats?.map(format => {
+        this.getOrCreateDevicePipelines(prepareDescriptor.device, prepareDescriptor.maxArrayLayers)?.preparePipelines(prepareDescriptor?.formats?.map(format => {
             return {
                 ...format,
                 filters: new Set(Array.from(format.filters ?? []).map(filter => this.filters.get(filter) ?? SPD_FILTER_AVERAGE)),
@@ -1011,9 +1011,9 @@ export class WebGPUSinglePassDownsampler {
         }));
     }
 
-    private getOrCreateDevicePipelines(device: GPUDevice): DevicePipelines | undefined {
+    private getOrCreateDevicePipelines(device: GPUDevice, maxArrayLayers?: number): DevicePipelines | undefined {
         if (!this.devicePipelines.has(device)) {
-            this.devicePipelines.set(device, new DevicePipelines(device));
+            this.devicePipelines.set(device, new DevicePipelines(device, maxArrayLayers));
         }
         return this.devicePipelines.get(device);
     }
