@@ -103,6 +103,12 @@ export interface SPDPrepareDeviceDescriptor {
      * The formats to prepare downsampling pipelines for.
      */
     formats?: Array<SPDPrepareFormatDescriptor>;
+    /**
+     * The maximum number of array layers will be downsampled on the {@link device} within a single pass.
+     * If a texture has more, downsampling will be split up into multiple passes handling up to this limit of array layers each.
+     * Defaults to {@link device.limits.maxTextureArrayLayers}.
+     */
+    maxArrayLayers?: number;
 }
 /**
  * Returns the maximum number of mip levels for a given n-dimensional size.
@@ -112,7 +118,7 @@ export interface SPDPrepareDeviceDescriptor {
 export declare function maxMipLevelCount(...size: number[]): number;
 /**
  * A helper class for downsampling 2D {@link GPUTexture} (& arrays) using as few passes as possible on a {@link GPUDevice} depending on its {@link GPUSupportedLimits}.
- * Up to 6 mip levels can be generated within a single pass, if {@link GPUSupportedLimits.maxStorageTexturesPerShaderStage} supports it.
+ * Up to 12 mip levels can be generated within a single pass, if {@link GPUSupportedLimits.maxStorageTexturesPerShaderStage} supports it.
  */
 export declare class WebGPUSinglePassDownsampler {
     private filters;
@@ -123,9 +129,10 @@ export declare class WebGPUSinglePassDownsampler {
      * If {@link limits} is undefined, creates a new record of preferred device limits for {@link WebGPUSinglePassDownsampler}.
      * The result can be used to set {@link GPUDeviceDescriptor.requiredLimits} when requesting a device.
      * @param limits A record of device limits set to update with the preferred limits for {@link WebGPUSinglePassDownsampler}
+     * @param adapter If this is set, the preferred limits that are set by this function will be clamped to {@link GPUAdapter.limits}.
      * @returns The updated or created set of device limits with all preferred limits for {@link WebGPUSinglePassDownsampler} set
      */
-    static setPreferredLimits(limits?: Record<string, number | GPUSize64>): Record<string, number | GPUSize64>;
+    static setPreferredLimits(limits?: Record<string, number | GPUSize64>, adapter?: GPUAdapter): Record<string, number | GPUSize64>;
     /**
      * Creates a new {@link WebGPUSinglePassDownsampler}.
      * On its own, {@link WebGPUSinglePassDownsampler} does not allocate any GPU resources.
@@ -168,7 +175,7 @@ export declare class WebGPUSinglePassDownsampler {
      * If the given filter does not exist, an averaging filter will be used as a fallback.
      * The image region to downsample and the number of mip levels to generate are clamped to the input texture's size, and the output texture's `mipLevelCount`.
      *
-     * Depending on the number of mip levels to generate and the device's `maxStorageTexturesPerShaderStage` limit, the {@link SPDPass} will internally consist of multiple passes, each generating up to `min(maxStorageTexturesPerShaderStage, 6)` mip levels.
+     * Depending on the number of mip levels to generate and the device's `maxStorageTexturesPerShaderStage` limit, the {@link SPDPass} will internally consist of multiple passes, each generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels.
      *
      * @param device The device the {@link SPDPass} should be prepared for
      * @param texture The texture that is to be processed by the {@link SPDPass}. Must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}. Must support {@link GPUTextureUsage.TEXTURE_BINDING}, and, if no other target is given {@link GPUTextureUsage.STORAGE_BINDING}.

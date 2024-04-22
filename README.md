@@ -1,6 +1,6 @@
 # WebGPU SPD
 
-A utility library for generating up to 6 mip levels for 2d textures & texture arrays in a single WebGPU compute pass.
+A utility library for generating up to 12 mip levels for 2d textures & texture arrays in a single WebGPU compute pass.
 
 ## Docs
 
@@ -20,8 +20,8 @@ npm install webgpu-spd
 
 ## Usage
 
-WebGPU SPD downsamples 2d textures and 2d texture arrays using compute pipelines generating up to 6 mip levels in a single pass (all array layers are processed in the same pass). The maximum number of mip levels that can be generated within a single pass depends on the `maxStorageTexturesPerShaderStage` limit supported by the device used.
-Should the number of mip levels requested for a texture exceed this limit, multiple passes, generating up to `min(maxStorageTexturesPerShaderStage, 6)` mip levels each, will be used.
+WebGPU SPD downsamples 2d textures and 2d texture arrays using compute pipelines generating up to 12 mip levels in a single pass (all array layers are processed in the same pass). The maximum number of mip levels that can be generated within a single pass depends on the `maxStorageTexturesPerShaderStage` limit supported by the device used.
+Should the number of mip levels requested for a texture exceed this limit, multiple passes, generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels each, will be used.
 The mip levels generated for a given input texture are either stored in the input texture itself or in a given target texture.
 This output texture must support `GPUTextureUsage.STORAGE_BINDING` with access mode `"write-only"`.
 

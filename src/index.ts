@@ -6,12 +6,20 @@ function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVER
     // todo: get rid of this branching as soon as WGSL supports arrays of texture_storage_2d_array
     const mipsAccessorBody = Array(numMips).fill(0)
         .map((_, i) => {
+            if (i == 5 && numMips > 6) {
+                return ` else if mip == 6 {
+                    textureStore(dst_mip_6, uv, slice, value);
+                    mip_dst_6_buffer[slice][uv.y][uv.x] = value;
+                }`
+            }
             return `${i === 0 ? '' : ' else '}if mip == ${i + 1} {
                 textureStore(dst_mip_${i + 1}, uv, slice, value);
             }`;
         })
         .join('');
+    
     const mipsAccessor = `fn store_dst_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {\n${mipsAccessorBody}\n}`
+    const midMipAccessor =`return mip_dst_6_buffer[slice][uv.y][uv.x];`;
 
     return /* wgsl */`
     // This file is part of the FidelityFX SDK.
@@ -92,11 +100,13 @@ struct DownsamplePassMeta {
 }
 
 // In the original version dst_mip_i is an image2Darray [SPD_MAX_MIP_LEVELS+1], i.e., 12+1, but WGSL doesn't support arrays of textures yet
-// Also these are read_write because for mips 7-13, the workgroup reads from mip level 6 - since most formats don't support read_write access in WGSL yet, this is split in two passes and we can just use write_only access
+// Also these are read_write because for mips 7-13, the workgroup reads from mip level 6 - since most formats don't support read_write access in WGSL yet, we use a single read_write buffer in such cases instead
 @group(0) @binding(0) var src_mip_0: texture_2d_array<f32>;
 ${mipsBindings}
 
 @group(1) @binding(0) var<uniform> downsample_pass_meta : DownsamplePassMeta;
+@group(1) @binding(1) var<storage, read_write> spd_global_counter: array<atomic<u32>>;
+@group(1) @binding(2) var<storage, read_write> mip_dst_6_buffer: array<array<array<vec4<f32>, 64>, 64>>;
 
 fn get_mips() -> u32 {
     return downsample_pass_meta.mips;
@@ -114,21 +124,47 @@ fn load_src_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
     return textureLoad(src_mip_0, uv, slice, 0);
 }
 
+fn load_mid_mip_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
+    ${numMips > 6 ? midMipAccessor : 'return vec4<f32>();'}
+}
+
 ${mipsAccessor}
 
 // Workgroup -----------------------------------------------------------------------------------------------------------
 
 var<workgroup> spd_intermediate: array<array<vec4<f32>, 16>, 16>;
+var<workgroup> spd_counter: atomic<u32>;
+
+fn spd_increase_atomic_counter(slice: u32) {
+    atomicStore(&spd_counter, atomicAdd(&spd_global_counter[slice], 1));
+}
+
+fn spd_get_atomic_counter() -> u32 {
+    return atomicLoad(&spd_counter);
+}
+
+fn spd_reset_atomic_counter(slice: u32) {
+    atomicStore(&spd_global_counter[slice], 0);
+}
 
 // Cotnrol flow --------------------------------------------------------------------------------------------------------
 
 fn spd_barrier() {
     // in glsl this does: groupMemoryBarrier(); barrier();
-    storageBarrier();
-    // textureBarrier should not be needed as long as we split downsamping into two passes
-    //textureBarrier(); // a storage texture is in handle space? requires readonly_and_readwrite_storage_textures extension
     workgroupBarrier();
 }
+
+// Only last active workgroup should proceed
+fn spd_exit_workgroup(num_work_groups: u32, local_invocation_index: u32, slice: u32) -> bool {
+    // global atomic counter
+    if (local_invocation_index == 0) {
+        spd_increase_atomic_counter(slice);
+    }
+    spd_barrier();
+    return spd_get_atomic_counter() != (num_work_groups - 1);
+}
+
+// Pixel access --------------------------------------------------------------------------------------------------------
 
 ${filterOp}
 
@@ -157,6 +193,14 @@ fn spd_reduce_load_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
     let v1 = load_src_image(base + vec2<u32>(0, 1), slice);
     let v2 = load_src_image(base + vec2<u32>(1, 0), slice);
     let v3 = load_src_image(base + vec2<u32>(1, 1), slice);
+    return spd_reduce_4(v0, v1, v2, v3);
+}
+
+fn spd_reduce_load_mid_mip_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
+    let v0 = load_mid_mip_image(base + vec2<u32>(0, 0), slice);
+    let v1 = load_mid_mip_image(base + vec2<u32>(0, 1), slice);
+    let v2 = load_mid_mip_image(base + vec2<u32>(1, 0), slice);
+    let v3 = load_mid_mip_image(base + vec2<u32>(1, 1), slice);
     return spd_reduce_4(v0, v1, v2, v3);
 }
 
@@ -319,26 +363,60 @@ fn spd_downsample_next_four(x: u32, y: u32, workgroup_id: vec2<u32>, local_invoc
     spd_downsample_mip_5(workgroup_id, local_invocation_index, base_mip + 3, slice);
 }
 
+fn spd_downsample_last_four(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, base_mip: u32, mips: u32, slice: u32, exit: bool) {
+    if mips <= base_mip {
+        return;
+    }
+    spd_barrier();
+    if !exit {
+        spd_downsample_mip_2(x, y, workgroup_id, local_invocation_index, base_mip, slice);
+    }
+
+    if mips <= base_mip + 1 {
+        return;
+    }
+    spd_barrier();
+    if !exit {
+        spd_downsample_mip_3(x, y, workgroup_id, local_invocation_index, base_mip + 1, slice);
+    }
+
+    if mips <= base_mip + 2 {
+        return;
+    }
+    spd_barrier();
+    if !exit {
+        spd_downsample_mip_4(x, y, workgroup_id, local_invocation_index, base_mip + 2, slice);
+    }
+
+    if mips <= base_mip + 3 {
+        return;
+    }
+    spd_barrier();
+    if !exit {
+        spd_downsample_mip_5(workgroup_id, local_invocation_index, base_mip + 3, slice);
+    }
+}
+
 fn spd_downsample_mips_6_7(x: u32, y: u32, mips: u32, slice: u32) {
     var tex = vec2<u32>(x * 4 + 0, y * 4 + 0);
     var pix = vec2<u32>(x * 2 + 0, y * 2 + 0);
-    let v0 = spd_reduce_load_4(tex, slice);
-    spd_store(pix, v0, 0, slice);
+    let v0 = spd_reduce_load_mid_mip_4(tex, slice);
+    spd_store(pix, v0, 6, slice);
 
     tex = vec2<u32>(x * 4 + 2, y * 4 + 0);
     pix = vec2<u32>(x * 2 + 1, y * 2 + 0);
-    let v1 = spd_reduce_load_4(tex, slice);
-    spd_store(pix, v1, 0, slice);
+    let v1 = spd_reduce_load_mid_mip_4(tex, slice);
+    spd_store(pix, v1, 6, slice);
 
     tex = vec2<u32>(x * 4 + 0, y * 4 + 2);
     pix = vec2<u32>(x * 2 + 0, y * 2 + 1);
-    let v2 = spd_reduce_load_4(tex, slice);
-    spd_store(pix, v2, 0, slice);
+    let v2 = spd_reduce_load_mid_mip_4(tex, slice);
+    spd_store(pix, v2, 6, slice);
 
     tex = vec2<u32>(x * 4 + 2, y * 4 + 2);
     pix = vec2<u32>(x * 2 + 1, y * 2 + 1);
-    let v3 = spd_reduce_load_4(tex, slice);
-    spd_store(pix, v3, 0, slice);
+    let v3 = spd_reduce_load_mid_mip_4(tex, slice);
+    spd_store(pix, v3, 6, slice);
 
     if mips <= 7 {
         return;
@@ -346,8 +424,31 @@ fn spd_downsample_mips_6_7(x: u32, y: u32, mips: u32, slice: u32) {
     // no barrier needed, working on values only from the same thread
 
     let v = spd_reduce_4(v0, v1, v2, v3);
-    spd_store(vec2<u32>(x, y), v, 1, slice);
+    spd_store(vec2<u32>(x, y), v, 7, slice);
     spd_store_intermediate(x, y, v);
+}
+
+fn spd_downsample_last_6(x: u32, y: u32, local_invocation_index: u32, mips: u32, num_work_groups: u32, slice: u32) {
+    if mips <= 6 {
+        return;
+    }
+
+    // increase the global atomic counter for the given slice and check if it's the last remaining thread group:
+    // terminate if not, continue if yes.
+    let exit = spd_exit_workgroup(num_work_groups, local_invocation_index, slice);
+
+    // can't exit directly because subsequent barrier calls break uniform control flow...
+    if !exit {
+        // reset the global atomic counter back to 0 for the next spd dispatch
+        spd_reset_atomic_counter(slice);
+
+        // After mip 5 there is only a single workgroup left that downsamples the remaining up to 64x64 texels.
+        // compute MIP level 6 and 7
+        spd_downsample_mips_6_7(x, y, mips, slice);
+    }
+
+    // compute MIP level 8, 9, 10, 11
+    spd_downsample_last_four(x, y, vec2<u32>(0, 0), local_invocation_index, 8, mips, slice, exit);
 }
 
 /// Downsamples a 64x64 tile based on the work group id.
@@ -362,6 +463,7 @@ fn spd_downsample(workgroup_id: vec2<u32>, local_invocation_index: u32, mips: u3
     let xy = map_to_xy(local_invocation_index);
     spd_downsample_mips_0_1(xy.x, xy.y, workgroup_id, local_invocation_index, mips, slice);
     spd_downsample_next_four(xy.x, xy.y, workgroup_id, local_invocation_index, 2, mips, slice);
+    ${numMips > 6 ? 'spd_downsample_last_6(xy.x, xy.y, local_invocation_index, mips, num_work_groups, slice);' : ''}
 }
 
 // Entry points -------------------------------------------------------------------------------------------------------
@@ -534,6 +636,7 @@ interface GPUDownsamplingMeta {
     workgroupOffset: [number, number],
     numWorkGroups: number,
     numMips: number,
+    numArrayLayers: number,
 }
 
 class SPDPipeline {
@@ -563,18 +666,32 @@ export interface SPDPrepareDeviceDescriptor {
      * The formats to prepare downsampling pipelines for.
      */
     formats?: Array<SPDPrepareFormatDescriptor>,
+
+    /**
+     * The maximum number of array layers will be downsampled on the {@link device} within a single pass.
+     * If a texture has more, downsampling will be split up into multiple passes handling up to this limit of array layers each. 
+     * Defaults to {@link device.limits.maxTextureArrayLayers}.
+     */
+    maxArrayLayers?: number,
 }
 
 class DevicePipelines {
     private device: WeakRef<GPUDevice>;
     private maxMipsPerPass: number;
+    private maxArrayLayers: number;
     private internalResourcesBindGroupLayout: GPUBindGroupLayout;
+    private internalResourcesBindGroupLayout12?: GPUBindGroupLayout;
+    private atomicCounters?: GPUBuffer;
+    private midMipBuffers: Map<number, GPUBuffer>;
     private pipelines: Map<GPUTextureFormat, Map<string, Map<number, SPDPipeline>>>;
 
-    constructor(device: GPUDevice) {
+    constructor(device: GPUDevice, maxArrayLayers?: number) {
         this.device = new WeakRef(device);
-        this.maxMipsPerPass = Math.min(device.limits.maxStorageTexturesPerShaderStage, 6);
+        this.maxMipsPerPass = Math.min(device.limits.maxStorageTexturesPerShaderStage, 12);
+        this.maxArrayLayers = Math.min(device.limits.maxTextureArrayLayers, maxArrayLayers ?? device.limits.maxTextureArrayLayers);
         this.pipelines = new Map();
+        this.midMipBuffers = new Map();
+
         this.internalResourcesBindGroupLayout = device.createBindGroupLayout({
             entries: [{
                 binding: 0,
@@ -586,6 +703,45 @@ class DevicePipelines {
                 },
             }],
         });
+
+        if (this.maxMipsPerPass > 6) {
+            this.atomicCounters = device.createBuffer({
+                size: this.maxArrayLayers * 4,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(this.atomicCounters, 0, new Uint32Array(Array(this.maxArrayLayers).fill(0)));
+            this.internalResourcesBindGroupLayout12 = device.createBindGroupLayout({
+                entries: [
+                    {
+                        binding: 0,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: {
+                            type: 'uniform',
+                            hasDynamicOffset: false,
+                            minBindingSize: 16,
+                        },
+                    },
+                    {
+                        binding: 1,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: {
+                            type: 'storage',
+                            hasDynamicOffset: false,
+                            minBindingSize: 4,
+                        },
+                    },
+                    {
+                        binding: 2,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: {
+                            type: 'storage',
+                            hasDynamicOffset: false,
+                            minBindingSize: 16 * 64 * 64,
+                        },
+                    },
+                ],
+            }); 
+        }
     }
 
     preparePipelines(pipelineConfigs?: Array<SPDPrepareFormatDescriptor>) {
@@ -641,7 +797,7 @@ class DevicePipelines {
                 layout: device.createPipelineLayout({
                     bindGroupLayouts: [
                         mipsBindGroupLayout,
-                        this.internalResourcesBindGroupLayout,
+                        numMips > 6 ? this.internalResourcesBindGroupLayout12! : this.internalResourcesBindGroupLayout,
                     ],
                 }),
             }),
@@ -664,6 +820,16 @@ class DevicePipelines {
         return this.pipelines.get(targetFormat)?.get(filterCode)?.get(numMipsToCreate);
     }
 
+    private getOrCreateMidMipBuffer(device: GPUDevice, numArrayLayers: number): GPUBuffer {
+        if (!this.midMipBuffers.has(numArrayLayers)) {
+            this.midMipBuffers.set(numArrayLayers, device.createBuffer({
+                size: 16 * 64 * 64 * numArrayLayers,
+                usage: GPUBufferUsage.STORAGE,
+            }));
+        }
+        return this.midMipBuffers.get(numArrayLayers)!
+    }
+
     private createMetaBindGroup(device: GPUDevice, meta: GPUDownsamplingMeta): GPUBindGroup {
         const metaBuffer = device.createBuffer({
             size: 16,
@@ -674,15 +840,41 @@ class DevicePipelines {
             meta.numWorkGroups,
             meta.numMips,
         ]));
-        return device.createBindGroup({
-            layout: this.internalResourcesBindGroupLayout,
-            entries: [{
-                binding: 0,
-                resource: {
-                    buffer: metaBuffer,
-                },
-            }]
-        });
+        if (meta.numMips > 6) {
+            return device.createBindGroup({
+                layout: this.internalResourcesBindGroupLayout12!,
+                entries: [
+                    {
+                        binding: 0,
+                        resource: {
+                            buffer: metaBuffer,
+                        },
+                    },
+                    {
+                        binding: 1,
+                        resource: {
+                            buffer: this.atomicCounters!,
+                        },
+                    },
+                    {
+                        binding: 2,
+                        resource: {
+                            buffer: this.getOrCreateMidMipBuffer(device, meta.numArrayLayers),
+                        },
+                    },
+                ]
+            });            
+        } else {
+            return device.createBindGroup({
+                layout: this.internalResourcesBindGroupLayout,
+                entries: [{
+                    binding: 0,
+                    resource: {
+                        buffer: metaBuffer,
+                    },
+                }]
+            });
+        }
     }
 
     preparePass(texture: GPUTexture, target: GPUTexture, filterCode: string, offset: [number, number], size: [number, number], numMipsTotal: number): SPDPass | undefined {
@@ -692,55 +884,59 @@ class DevicePipelines {
         }
 
         const passes = [];
-        for (let baseMip = 0; baseMip < numMipsTotal - 1; baseMip += this.maxMipsPerPass) {
-            const numMipsThisPass = Math.min(numMipsTotal - 1 - baseMip, this.maxMipsPerPass);
+        for (let baseArrayLayer = 0; baseArrayLayer < this.maxArrayLayers - 1; baseArrayLayer += this.maxArrayLayers) {
+            const numArrayLayersThisPass = Math.min(target.depthOrArrayLayers - baseArrayLayer, this.maxArrayLayers);
+            for (let baseMip = 0; baseMip < numMipsTotal - 1; baseMip += this.maxMipsPerPass) {
+                const numMipsThisPass = Math.min(numMipsTotal - 1 - baseMip, this.maxMipsPerPass);
 
-            const baseMipOffset = offset.map(o => Math.floor(o / Math.pow(2, baseMip)));
-            const baseMipSize = size.map(s => Math.max(Math.floor(s / Math.pow(2, baseMip)), 1));
-            const workgroupOffset = baseMipOffset.map(o => o / 64) as [number, number];
-            const dispatchDimensions = baseMipOffset.map((o, i) => ((o + baseMipSize[i] - 1) / 64) + 1 - workgroupOffset[i]) as [number, number];
-            const numWorkGroups = dispatchDimensions.reduce((product, v) => v * product, 1);
+                const baseMipOffset = offset.map(o => Math.trunc(o / Math.pow(2, baseMip)));
+                const baseMipSize = size.map(s => Math.max(Math.trunc(s / Math.pow(2, baseMip)), 1));
+                const workgroupOffset = baseMipOffset.map(o => Math.trunc(o / 64)) as [number, number];
+                const dispatchDimensions = baseMipOffset.map((o, i) => Math.trunc((o + baseMipSize[i] - 1) / 64) + 1 - workgroupOffset[i]) as [number, number];
+                const numWorkGroups = dispatchDimensions.reduce((product, v) => v * product, 1);
 
-            const metaBindGroup = this.createMetaBindGroup(device, {
-                workgroupOffset,
-                numWorkGroups,
-                numMips: numMipsThisPass
-            });
+                const metaBindGroup = this.createMetaBindGroup(device, {
+                    workgroupOffset,
+                    numWorkGroups,
+                    numMips: numMipsThisPass,
+                    numArrayLayers: numArrayLayersThisPass,
+                });
 
-            // todo: handle missing pipeline
-            const pipeline = this.getOrCreatePipeline(target.format, filterCode, numMipsThisPass)!;
+                // todo: handle missing pipeline
+                const pipeline = this.getOrCreatePipeline(target.format, filterCode, numMipsThisPass)!;
 
-            const mipViews = Array(numMipsThisPass + 1).fill(0).map((_, i) => {
-                if (baseMip === 0 && i === 0) {
-                    return texture.createView({
-                        dimension: '2d-array',
-                        baseMipLevel: 0,
-                        mipLevelCount: 1,
-                        baseArrayLayer: 0,
-                        arrayLayerCount: texture.depthOrArrayLayers,
-                    });
-                } else {
-                    const mip = baseMip + i;
-                    return target.createView({
-                        dimension: '2d-array',
-                        baseMipLevel: texture === target ? mip : mip - 1,
-                        mipLevelCount: 1,
-                        baseArrayLayer: 0,
-                        arrayLayerCount: target.depthOrArrayLayers, 
-                    });
-                }
-            });
+                const mipViews = Array(numMipsThisPass + 1).fill(0).map((_, i) => {
+                    if (baseMip === 0 && i === 0) {
+                        return texture.createView({
+                            dimension: '2d-array',
+                            baseMipLevel: 0,
+                            mipLevelCount: 1,
+                            baseArrayLayer,
+                            arrayLayerCount: numArrayLayersThisPass,
+                        });
+                    } else {
+                        const mip = baseMip + i;
+                        return target.createView({
+                            dimension: '2d-array',
+                            baseMipLevel: texture === target ? mip : mip - 1,
+                            mipLevelCount: 1,
+                            baseArrayLayer,
+                            arrayLayerCount: numArrayLayersThisPass,
+                        });
+                    }
+                });
 
-            const mipsBindGroup = device.createBindGroup({
-                layout: pipeline.mipsLayout,
-                entries: mipViews.map((v, i) => {
-                    return {
-                        binding: i,
-                        resource: v,
-                    };
-                }),
-            });
-            passes.push(new SPDPassInner(pipeline.pipelines, [mipsBindGroup, metaBindGroup], [...dispatchDimensions, Math.min(texture.depthOrArrayLayers, target.depthOrArrayLayers)]));
+                const mipsBindGroup = device.createBindGroup({
+                    layout: pipeline.mipsLayout,
+                    entries: mipViews.map((v, i) => {
+                        return {
+                            binding: i,
+                            resource: v,
+                        };
+                    }),
+                });
+                passes.push(new SPDPassInner(pipeline.pipelines, [mipsBindGroup, metaBindGroup], [...dispatchDimensions, numArrayLayersThisPass]));
+            }
         }
         return new SPDPass(passes, target);
     }
@@ -757,7 +953,7 @@ export function maxMipLevelCount(...size: number[]): number {
 
 /**
  * A helper class for downsampling 2D {@link GPUTexture} (& arrays) using as few passes as possible on a {@link GPUDevice} depending on its {@link GPUSupportedLimits}.
- * Up to 6 mip levels can be generated within a single pass, if {@link GPUSupportedLimits.maxStorageTexturesPerShaderStage} supports it.
+ * Up to 12 mip levels can be generated within a single pass, if {@link GPUSupportedLimits.maxStorageTexturesPerShaderStage} supports it.
  */
 export class WebGPUSinglePassDownsampler {
     private filters: Map<string, string>;
@@ -769,13 +965,15 @@ export class WebGPUSinglePassDownsampler {
      * If {@link limits} is undefined, creates a new record of preferred device limits for {@link WebGPUSinglePassDownsampler}.
      * The result can be used to set {@link GPUDeviceDescriptor.requiredLimits} when requesting a device.
      * @param limits A record of device limits set to update with the preferred limits for {@link WebGPUSinglePassDownsampler}
+     * @param adapter If this is set, the preferred limits that are set by this function will be clamped to {@link GPUAdapter.limits}.
      * @returns The updated or created set of device limits with all preferred limits for {@link WebGPUSinglePassDownsampler} set
      */
-    static setPreferredLimits(limits?: Record<string, number | GPUSize64>): Record<string, number | GPUSize64> {
+    static setPreferredLimits(limits?: Record<string, number | GPUSize64>, adapter?: GPUAdapter): Record<string, number | GPUSize64> {
         if (!limits) {
             limits = {};
         }
-        limits.maxStorageTexturesPerShaderStage = Math.max(limits.maxStorageTexturesPerShaderStage ?? 6);
+        const maxStorageTexturesPerShaderStage = Math.min(adapter?.limits.maxStorageTexturesPerShaderStage ?? 12, 12);
+        limits.maxStorageTexturesPerShaderStage = Math.max(limits.maxStorageTexturesPerShaderStage ?? maxStorageTexturesPerShaderStage, maxStorageTexturesPerShaderStage);
         return limits;
     }
 
@@ -857,7 +1055,7 @@ export class WebGPUSinglePassDownsampler {
      * If the given filter does not exist, an averaging filter will be used as a fallback.
      * The image region to downsample and the number of mip levels to generate are clamped to the input texture's size, and the output texture's `mipLevelCount`.
      * 
-     * Depending on the number of mip levels to generate and the device's `maxStorageTexturesPerShaderStage` limit, the {@link SPDPass} will internally consist of multiple passes, each generating up to `min(maxStorageTexturesPerShaderStage, 6)` mip levels.
+     * Depending on the number of mip levels to generate and the device's `maxStorageTexturesPerShaderStage` limit, the {@link SPDPass} will internally consist of multiple passes, each generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels.
      * 
      * @param device The device the {@link SPDPass} should be prepared for
      * @param texture The texture that is to be processed by the {@link SPDPass}. Must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}. Must support {@link GPUTextureUsage.TEXTURE_BINDING}, and, if no other target is given {@link GPUTextureUsage.STORAGE_BINDING}.

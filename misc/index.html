@@ -147,7 +147,7 @@
 
         async function main() {
             const adapter = await navigator.gpu.requestAdapter();
-            const device = await adapter.requestDevice({requiredLimits: WebGPUSinglePassDownsampler.setPreferredLimits()});
+            const device = await adapter.requestDevice({requiredLimits: WebGPUSinglePassDownsampler.setPreferredLimits({}, adapter)});
 
             const canvas = document.querySelector('canvas');
             const context = canvas.getContext('webgpu');
