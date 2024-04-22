@@ -118,39 +118,7 @@ ${mipsAccessor}
 
 // Workgroup -----------------------------------------------------------------------------------------------------------
 
-// WGSL doesn't support array<array<f32, 16>, 16> yet?
-var<workgroup> spd_intermediate_r: array<f32, 256>;
-var<workgroup> spd_intermediate_g: array<f32, 256>;
-var<workgroup> spd_intermediate_b: array<f32, 256>;
-var<workgroup> spd_intermediate_a: array<f32, 256>;
-
-fn to_intermediate_index(x: u32, y: u32) -> u32 {
-    return y * 16 + x;
-}
-fn get_intermediate_r(x: u32, y: u32) -> f32 {
-    return spd_intermediate_r[to_intermediate_index(x, y)];
-}
-fn get_intermediate_g(x: u32, y: u32) -> f32 {
-    return spd_intermediate_g[to_intermediate_index(x, y)];
-}
-fn get_intermediate_b(x: u32, y: u32) -> f32 {
-    return spd_intermediate_b[to_intermediate_index(x, y)];
-}
-fn get_intermediate_a(x: u32, y: u32) -> f32 {
-    return spd_intermediate_a[to_intermediate_index(x, y)];
-}
-fn set_intermediate_r(x: u32, y: u32, v: f32) {
-    spd_intermediate_r[to_intermediate_index(x, y)] = v;
-}
-fn set_intermediate_g(x: u32, y: u32, v: f32) {
-    spd_intermediate_g[to_intermediate_index(x, y)] = v;
-}
-fn set_intermediate_b(x: u32, y: u32, v: f32) {
-    spd_intermediate_b[to_intermediate_index(x, y)] = v;
-}
-fn set_intermediate_a(x: u32, y: u32, v: f32) {
-    spd_intermediate_a[to_intermediate_index(x, y)] = v;
-}
+var<workgroup> spd_intermediate: array<array<vec4<f32>, 16>, 16>;
 
 // Cotnrol flow --------------------------------------------------------------------------------------------------------
 
@@ -169,14 +137,11 @@ fn spd_store(pix: vec2<u32>, out_value: vec4<f32>, mip: u32, slice: u32) {
 }
 
 fn spd_load_intermediate(x: u32, y: u32) -> vec4<f32> {
-    return vec4<f32>(get_intermediate_r(x, y), get_intermediate_g(x, y), get_intermediate_b(x, y), get_intermediate_a(x, y));
+    return spd_intermediate[x][y];
 }
 
 fn spd_store_intermediate(x: u32, y: u32, value: vec4<f32>) {
-    set_intermediate_r(x, y, value.x);
-    set_intermediate_g(x, y, value.y);
-    set_intermediate_b(x, y, value.z);
-    set_intermediate_a(x, y, value.w);
+    spd_intermediate[x][y] = value;
 }
 
 fn spd_reduce_intermediate(i0: vec2<u32>, i1: vec2<u32>, i2: vec2<u32>, i3: vec2<u32>) -> vec4<f32> {
