@@ -8,21 +8,26 @@ See [here](https://jolifantobambla.github.io/webgpu-spd).
 
 ## Installation
 
-### From GitHub
-```js
-import { WebGPUSinglePassDownsampler } from 'https://jolifantobambla.github.io/webgpu-spd/1.0.0/dist/index.js';
-```
-
 ### NPM
 ```bash
 npm install webgpu-spd
 ```
 
+### From GitHub
+```js
+import { WebGPUSinglePassDownsampler } from 'https://jolifantobambla.github.io/webgpu-spd/1.0.0/dist/index.js';
+```
+
+### From UNPKG
+```js
+import { WebGPUSinglePassDownsampler } from 'https://unpkg.com/webgpu-spd@1.0.0/dist/index.js';
+```
+
 ## Usage
 
 WebGPU SPD downsamples 2d textures and 2d texture arrays using compute pipelines generating up to 12 mip levels in a single pass (all array layers are processed in the same pass). The maximum number of mip levels that can be generated within a single pass depends on the `maxStorageTexturesPerShaderStage` limit supported by the device used.
-Should the number of mip levels requested for a texture exceed this limit, multiple passes, generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels each, will be used.
-The mip levels generated for a given input texture are either stored in the input texture itself or in a given target texture.
+Should the number of mip levels requested for a texture exceed this limit, multiple passes, generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels each, will be used instead.
+The mip levels generated for a given input texture are stored either in the input texture or in a separate target texture if specified.
 This output texture must support `GPUTextureUsage.STORAGE_BINDING` with access mode `"write-only"`.
 
 #### Generate mipmaps
@@ -119,12 +124,11 @@ const minMaxDepthPass = downsampler.preparePass(device, linearDepth, {
 // ... write mip level 0 of linearDepth
 
 minMaxDepthPass.encode(computePassEncoder);
-
 ```
 
 #### Prepare pipelines for expected formats
 
-In the above examples, GPU resources, like compute pipelines and bindgroup layouts etc., are created on the fly the first time a new configuration of `GPUDevice`, `GPUTextureFormat`, and filter is needed.
+In the above examples, GPU resources, like compute pipelines and bind group layouts etc., are created on the fly the first time a new configuration of `GPUDevice`, `GPUTextureFormat`, and filter is needed.
 
 WebGPU SPD also supports allocating resources during setup, like this:
 
@@ -141,6 +145,23 @@ downsampler.prepareDeviceResources({ device, formats: [
     { format: 'rgba8unorm' },
     { format: 'r32float', filters: [ SPDFilters.Min ] },
 ]});
+```
+
+#### Limit the number of array layers per pass
+
+If more than 6 mip levels are downsampled per pass, WebGPU SPD allocates additional internal resources to store intermediate texture data (`16 * 64 * 64 * maxArrayLayers` bytes) and for control flow purposes (`4 * maxArrayLayers` bytes).
+The size of these resources depends on the number of array layers that can be downsampled each pass.
+If a texture's number of array layers exceeds the number of array layers per pass, multiple passes will be used instead.
+By default, WebGPU SPD uses the device's `maxTextureArrayLayers` limit.
+WebGPU SPD can be configured to use a different limit like this:
+
+```js
+import { WebGPUSinglePassDownsampler, SPDFilters } from 'webgpu-spd';
+
+const downsampler = new WebGPUSinglePassDownsampler({ device, maxArrayLayers: 1 });
+
+// alternatively call
+downsampler.prepareDeviceResources({ device, maxArrayLayers: 1 });
 ```
 
 #### Handling device loss
