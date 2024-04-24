@@ -1,4 +1,4 @@
-function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE, numMips: number): string {
+function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE, numMips: number, halfPrecision: boolean = false): string {
     const mipsBindings = Array(numMips).fill(0)
         .map((_, i) => `@group(0) @binding(${i + 1}) var dst_mip_${i + 1}: texture_storage_2d_array<${outputFormat}, write>;`)
         .join('\n');
@@ -8,17 +8,18 @@ function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVER
         .map((_, i) => {
             if (i == 5 && numMips > 6) {
                 return ` else if mip == 6 {
-                    textureStore(dst_mip_6, uv, slice, value);
-                    mip_dst_6_buffer[slice][uv.y][uv.x] = value;
+                    let val32 = vec4<f32>(value);
+                    textureStore(dst_mip_6, uv, slice, val32);
+                    mip_dst_6_buffer[slice][uv.y][uv.x] = val32;
                 }`
             }
             return `${i === 0 ? '' : ' else '}if mip == ${i + 1} {
-                textureStore(dst_mip_${i + 1}, uv, slice, value);
+                textureStore(dst_mip_${i + 1}, uv, slice, vec4<f32>(value));
             }`;
         })
         .join('');
     
-    const mipsAccessor = `fn store_dst_mip(value: vec4<f32>, uv: vec2<u32>, slice: u32, mip: u32) {\n${mipsAccessorBody}\n}`
+    const mipsAccessor = `fn store_dst_mip(value: vec4<SPDFloat>, uv: vec2<u32>, slice: u32, mip: u32) {\n${mipsAccessorBody}\n}`
     const midMipAccessor =`return mip_dst_6_buffer[slice][uv.y][uv.x];`;
 
     return /* wgsl */`
@@ -44,6 +45,11 @@ function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVER
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+
+// Definitions --------------------------------------------------------------------------------------------------------
+
+${halfPrecision ? 'enable f16;' : ''}
+alias SPDFloat = ${halfPrecision ? 'f16' : 'f32'};
 
 // Helpers ------------------------------------------------------------------------------------------------------------
 
@@ -86,9 +92,9 @@ fn map_to_xy(local_invocation_index: u32) -> vec2<u32> {
  * 
  *  @returns A value in SRGB space.
  */
-fn srgb_to_linear(value: f32) -> f32 {
-    let j = vec3<f32>(0.0031308 * 12.92, 12.92, 1.0 / 2.4);
-    let k = vec2<f32>(1.055, -0.055);
+fn srgb_to_linear(value: SPDFloat) -> SPDFloat {
+    let j = vec3<SPDFloat>(0.0031308 * 12.92, 12.92, 1.0 / 2.4);
+    let k = vec2<SPDFloat>(1.055, -0.055);
     return clamp(j.x, value * j.y, pow(value, j.z) * k.x + k.y);
 }
 
@@ -120,19 +126,19 @@ fn get_work_group_offset() -> vec2<u32> {
     return downsample_pass_meta.work_group_offset;
 }
 
-fn load_src_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
-    return textureLoad(src_mip_0, uv, slice, 0);
+fn load_src_image(uv: vec2<u32>, slice: u32) -> vec4<SPDFloat> {
+    return vec4<SPDFloat>(textureLoad(src_mip_0, uv, slice, 0));
 }
 
-fn load_mid_mip_image(uv: vec2<u32>, slice: u32) -> vec4<f32> {
-    ${numMips > 6 ? midMipAccessor : 'return vec4<f32>();'}
+fn load_mid_mip_image(uv: vec2<u32>, slice: u32) -> vec4<SPDFloat> {
+    ${numMips > 6 ? midMipAccessor : 'return vec4<SPDFloat>();'}
 }
 
 ${mipsAccessor}
 
 // Workgroup -----------------------------------------------------------------------------------------------------------
 
-var<workgroup> spd_intermediate: array<array<vec4<f32>, 16>, 16>;
+var<workgroup> spd_intermediate: array<array<vec4<SPDFloat>, 16>, 16>;
 var<workgroup> spd_counter: atomic<u32>;
 
 fn spd_increase_atomic_counter(slice: u32) {
@@ -168,19 +174,19 @@ fn spd_exit_workgroup(num_work_groups: u32, local_invocation_index: u32, slice: 
 
 ${filterOp}
 
-fn spd_store(pix: vec2<u32>, out_value: vec4<f32>, mip: u32, slice: u32) {
+fn spd_store(pix: vec2<u32>, out_value: vec4<SPDFloat>, mip: u32, slice: u32) {
     store_dst_mip(out_value, pix, slice, mip + 1);
 }
 
-fn spd_load_intermediate(x: u32, y: u32) -> vec4<f32> {
+fn spd_load_intermediate(x: u32, y: u32) -> vec4<SPDFloat> {
     return spd_intermediate[x][y];
 }
 
-fn spd_store_intermediate(x: u32, y: u32, value: vec4<f32>) {
+fn spd_store_intermediate(x: u32, y: u32, value: vec4<SPDFloat>) {
     spd_intermediate[x][y] = value;
 }
 
-fn spd_reduce_intermediate(i0: vec2<u32>, i1: vec2<u32>, i2: vec2<u32>, i3: vec2<u32>) -> vec4<f32> {
+fn spd_reduce_intermediate(i0: vec2<u32>, i1: vec2<u32>, i2: vec2<u32>, i3: vec2<u32>) -> vec4<SPDFloat> {
     let v0 = spd_load_intermediate(i0.x, i0.y);
     let v1 = spd_load_intermediate(i1.x, i1.y);
     let v2 = spd_load_intermediate(i2.x, i2.y);
@@ -188,7 +194,7 @@ fn spd_reduce_intermediate(i0: vec2<u32>, i1: vec2<u32>, i2: vec2<u32>, i3: vec2
     return spd_reduce_4(v0, v1, v2, v3);
 }
 
-fn spd_reduce_load_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
+fn spd_reduce_load_4(base: vec2<u32>, slice: u32) -> vec4<SPDFloat> {
     let v0 = load_src_image(base + vec2<u32>(0, 0), slice);
     let v1 = load_src_image(base + vec2<u32>(0, 1), slice);
     let v2 = load_src_image(base + vec2<u32>(1, 0), slice);
@@ -196,7 +202,7 @@ fn spd_reduce_load_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
     return spd_reduce_4(v0, v1, v2, v3);
 }
 
-fn spd_reduce_load_mid_mip_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
+fn spd_reduce_load_mid_mip_4(base: vec2<u32>, slice: u32) -> vec4<SPDFloat> {
     let v0 = load_mid_mip_image(base + vec2<u32>(0, 0), slice);
     let v1 = load_mid_mip_image(base + vec2<u32>(0, 1), slice);
     let v2 = load_mid_mip_image(base + vec2<u32>(1, 0), slice);
@@ -207,7 +213,7 @@ fn spd_reduce_load_mid_mip_4(base: vec2<u32>, slice: u32) -> vec4<f32> {
 // Main logic ---------------------------------------------------------------------------------------------------------
 
 fn spd_downsample_mips_0_1(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, mip: u32, slice: u32) {
-    var v: array<vec4<f32>, 4>;
+    var v: array<vec4<SPDFloat>, 4>;
 
     let workgroup64 = workgroup_id.xy * 64;
     let workgroup32 = workgroup_id.xy * 32;
@@ -483,27 +489,27 @@ fn downsample(@builtin(local_invocation_index) local_invocation_index: u32, @bui
 }
 
 const SPD_FILTER_AVERAGE: string = /* wgsl */`
-fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
+fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat> {
     return (v0 + v1 + v2 + v3) * 0.25;
 }
 `;
 
 const SPD_FILTER_MIN = /* wgsl */`
-fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
+fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat> {
     return min(min(v0, v1), min(v2, v3));
 }
 `;
 
 const SPD_FILTER_MAX = /* wgsl */`
-fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
+fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat> {
     return max(max(v0, v1), max(v2, v3));
 }
 `;
 
 const SPD_FILTER_MINMAX = /* wgsl */`
-fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
+fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat> {
     let max4 = max(max(v0.xy, v1.xy), max(v2.xy, v3.xy));
-    return vec4<f32>(min(min(v0.x, v1.x), min(v2.x, v3.x)), max(max4.x, max4.y), 0, 0);
+    return vec4<SPDFloat>(min(min(v0.x, v1.x), min(v2.x, v3.x)), max(max4.x, max4.y), 0, 0);
 }
 `;
 
@@ -590,6 +596,28 @@ export class SPDPass {
         computePassEncoder.setBindGroup(1, null);
         return computePassEncoder;
     }
+
+    /**
+     * Returns the number of passes that will be encoded by calling this instance's {@link SPDPass.encode} method.
+     */
+    get numPasses(): number {
+        return this.passes.length
+    }
+}
+
+/**
+ * Float precision supported by WebGPU SPD.
+ */
+export enum SPDPrecision {
+    /**
+     * Full precision (32-bit) floats.
+     */
+    F32 = 'f32',
+
+    /**
+     * Half precision (16-bit) floats.
+     */
+    F16 = 'f16',
 }
 
 /**
@@ -630,6 +658,13 @@ export interface SPDPassConfig {
      * Defaults to target.mipLevelCount.
      */
     numMips?: number,
+
+    /**
+     * The float precision to use for downsampling.
+     * Falls back to {@link SPDPrecision.F32}, if {@link SPDPrecision.F16} is requested but not supported by the device (feature 'shader-f16' not enabled).
+     * Defaults to {@link SPDPrecision.F32}.
+     */
+    precision?: SPDPrecision;
 }
 
 interface GPUDownsamplingMeta {
@@ -654,6 +689,13 @@ export interface SPDPrepareFormatDescriptor {
      * Defaults to {@link SPDFilters.Average}.
      */
     filters?: Set<string>,
+
+    /**
+     * The float precision to use for this combination of texture format and filters.
+     * Falls back to {@link SPDPrecision.F32}, if {@link SPDPrecision.F16} is requested but not supported by the device (feature 'shader-f16' not enabled).
+     * Defaults to {@link SPDPrecision.F32}.
+     */
+    precision?: SPDPrecision,
 }
 
 export interface SPDPrepareDeviceDescriptor {
@@ -683,7 +725,7 @@ class DevicePipelines {
     private internalResourcesBindGroupLayout12?: GPUBindGroupLayout;
     private atomicCounters?: GPUBuffer;
     private midMipBuffers: Map<number, GPUBuffer>;
-    private pipelines: Map<GPUTextureFormat, Map<string, Map<number, SPDPipeline>>>;
+    private pipelines: Map<GPUTextureFormat, Map<SPDPrecision, Map<string, Map<number, SPDPipeline>>>>;
 
     constructor(device: GPUDevice, maxArrayLayers?: number) {
         this.device = new WeakRef(device);
@@ -744,18 +786,29 @@ class DevicePipelines {
         }
     }
 
+    private sanitizePrecision(precision: SPDPrecision): SPDPrecision {
+        const device = this.device.deref();
+        if (!device) {
+            return precision;
+        } else if (precision === SPDPrecision.F16 && !device.features.has('shader-f16')) {
+            console.warn(`[DevicePipelines::sanitizePrecision]: half precision requested but the device feature 'shader-f16' is not enabled, falling back to full precision`);
+            return SPDPrecision.F32;
+        } else {
+            return precision;
+        }
+    }
+
     preparePipelines(pipelineConfigs?: Array<SPDPrepareFormatDescriptor>) {
-        pipelineConfigs?.map(c => {
+        pipelineConfigs?.forEach(c => {
             Array.from(c.filters ?? [SPD_FILTER_AVERAGE]).map(f => {
                 for (let i = 0; i < this.maxMipsPerPass; ++i) {
-                    this.getOrCreatePipeline(c.format, f, i + 1);
+                    this.getOrCreatePipeline(c.format, f, i + 1, c.precision ?? SPDPrecision.F32);
                 }
-            })
-            
+            });
         });
     }
 
-    private createPipeline(targetFormat: GPUTextureFormat, filterCode: string, numMips: number): SPDPipeline | undefined {
+    private createPipeline(targetFormat: GPUTextureFormat, filterCode: string, numMips: number, precision: SPDPrecision): SPDPipeline | undefined {
         const device = this.device.deref();
         if (!device) {
             return undefined;
@@ -783,15 +836,13 @@ class DevicePipelines {
             })
         });
 
-        const module = device.createShaderModule({
-            code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass)),
-        });
-
         return new SPDPipeline(
             mipsBindGroupLayout,
             device.createComputePipeline({
                 compute: {
-                    module,
+                    module: device.createShaderModule({
+                        code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass), precision === SPDPrecision.F16),
+                    }),
                     entryPoint: 'downsample',
                 },
                 layout: device.createPipelineLayout({
@@ -804,20 +855,24 @@ class DevicePipelines {
         );
     }
 
-    private getOrCreatePipeline(targetFormat: GPUTextureFormat, filterCode: string, numMipsToCreate: number): SPDPipeline | undefined {
+    private getOrCreatePipeline(targetFormat: GPUTextureFormat, filterCode: string, numMipsToCreate: number, precision: SPDPrecision): SPDPipeline | undefined {
+        const sanitizedPrecision = this.sanitizePrecision(precision);
         if (!this.pipelines.has(targetFormat)) {
             this.pipelines.set(targetFormat, new Map());
         }
-        if (!this.pipelines.get(targetFormat)?.has(filterCode)) {
-            this.pipelines.get(targetFormat)?.set(filterCode, new Map());
+        if (!this.pipelines.get(targetFormat)?.has(sanitizedPrecision)) {
+            this.pipelines.get(targetFormat)?.set(sanitizedPrecision, new Map());
         }
-        if (!this.pipelines.get(targetFormat)?.get(filterCode)?.has(numMipsToCreate)) {
-            const pipelines = this.createPipeline(targetFormat, filterCode, numMipsToCreate);
+        if (!this.pipelines.get(targetFormat)?.get(sanitizedPrecision)?.has(filterCode)) {
+            this.pipelines.get(targetFormat)?.get(sanitizedPrecision)?.set(filterCode, new Map());
+        }
+        if (!this.pipelines.get(targetFormat)?.get(sanitizedPrecision)?.get(filterCode)?.has(numMipsToCreate)) {
+            const pipelines = this.createPipeline(targetFormat, filterCode, numMipsToCreate, sanitizedPrecision);
             if (pipelines) {
-                this.pipelines.get(targetFormat)?.get(filterCode)?.set(numMipsToCreate, pipelines);
+                this.pipelines.get(targetFormat)?.get(sanitizedPrecision)?.get(filterCode)?.set(numMipsToCreate, pipelines);
             }
         }
-        return this.pipelines.get(targetFormat)?.get(filterCode)?.get(numMipsToCreate);
+        return this.pipelines.get(targetFormat)?.get(sanitizedPrecision)?.get(filterCode)?.get(numMipsToCreate);
     }
 
     private getOrCreateMidMipBuffer(device: GPUDevice, numArrayLayers: number): GPUBuffer {
@@ -877,7 +932,7 @@ class DevicePipelines {
         }
     }
 
-    preparePass(texture: GPUTexture, target: GPUTexture, filterCode: string, offset: [number, number], size: [number, number], numMipsTotal: number): SPDPass | undefined {
+    preparePass(texture: GPUTexture, target: GPUTexture, filterCode: string, offset: [number, number], size: [number, number], numMipsTotal: number, precision: SPDPrecision): SPDPass | undefined {
         const device = this.device.deref();
         if (!device) {
             return undefined;
@@ -903,7 +958,7 @@ class DevicePipelines {
                 });
 
                 // todo: handle missing pipeline
-                const pipeline = this.getOrCreatePipeline(target.format, filterCode, numMipsThisPass)!;
+                const pipeline = this.getOrCreatePipeline(target.format, filterCode, numMipsThisPass, precision)!;
 
                 const mipViews = Array(numMipsThisPass + 1).fill(0).map((_, i) => {
                     if (baseMip === 0 && i === 0) {
@@ -1031,7 +1086,7 @@ export class WebGPUSinglePassDownsampler {
      * 
      * The given WGSL code must (at least) specify a function to reduce four values into one with the following name and signature:
      * 
-     *   spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32>
+     *   spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat>
      * 
      * @param name The unique name of the filter operation
      * @param wgsl The WGSL code to inject into the downsampling shader as the filter operation
@@ -1099,7 +1154,7 @@ export class WebGPUSinglePassDownsampler {
         }
         const filterCode = this.filters.get(filter) ?? SPD_FILTER_AVERAGE;
 
-        return this.getOrCreateDevicePipelines(device)?.preparePass(texture, target, filterCode, offset, size, numMips);
+        return this.getOrCreateDevicePipelines(device)?.preparePass(texture, target, filterCode, offset, size, numMips, config?.precision ?? SPDPrecision.F32);
     }
 
     /**

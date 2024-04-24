@@ -71,6 +71,10 @@
                         <label for="intoTarget">Into separate target</label>
                         <input id="intoTarget" type="checkbox">
                     </div>
+                    <div>
+                        <label for="halfPrecision">Use half precision</label>
+                        <input id="halfPrecision" type="checkbox">
+                    </div>
                 </div>
             </div>
         </div>
@@ -147,7 +151,7 @@
 
         async function main() {
             const adapter = await navigator.gpu.requestAdapter();
-            const device = await adapter.requestDevice({requiredLimits: WebGPUSinglePassDownsampler.setPreferredLimits({}, adapter)});
+            const device = await adapter.requestDevice({requiredLimits: WebGPUSinglePassDownsampler.setPreferredLimits({}, adapter), requiredFeatures: adapter.features.has('shader-f16') ? ['shader-f16'] : []});
 
             const canvas = document.querySelector('canvas');
             const context = canvas.getContext('webgpu');
@@ -243,6 +247,7 @@
             const roiHeight = document.getElementById('roiHeight');
 
             const intoTarget = document.getElementById('intoTarget');
+            const halfPrecision = document.getElementById('halfPrecision');
 
             const onNewTexture = texture => {
                 if (filterRadio.filter(f => f.checked)[0].id === 'custom') {
@@ -259,6 +264,7 @@
                     offset: [offsetX.value, offsetY.value],
                     size: useRoiSize.checked ? [roiWidth.value, roiHeight.value] : [texture.width, texture.height],
                     target,
+                    precision: halfPrecision.checked ? 'f16' : 'f32',
                 };
                 if (!downsampler.generateMipmaps(device, texture, config)) {
                     console.warn(`could not downsample texture generated from ${textureUrl}`);

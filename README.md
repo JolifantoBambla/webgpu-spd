@@ -128,21 +128,21 @@ minMaxDepthPass.encode(computePassEncoder);
 
 #### Prepare pipelines for expected formats
 
-In the above examples, GPU resources, like compute pipelines and bind group layouts etc., are created on the fly the first time a new configuration of `GPUDevice`, `GPUTextureFormat`, and filter is needed.
+In the above examples, GPU resources, like compute pipelines and bind group layouts etc., are created on the fly the first time a new configuration of `GPUDevice`, `GPUTextureFormat`, filter, and precision is needed.
 
 WebGPU SPD also supports allocating resources during setup, like this:
 
 ```js
-import { WebGPUSinglePassDownsampler, SPDFilters } from 'webgpu-spd';
+import { WebGPUSinglePassDownsampler, SPDFilters, SPDPrecision } from 'webgpu-spd';
 
 const downsampler = new WebGPUSinglePassDownsampler({ device, formats: [
-    { format: 'rgba8unorm' },
+    { format: 'rgba8unorm', precision: SPDPrecision.F16 },
     { format: 'r32float', filters: [ SPDFilters.Min ] },
 ]});
 
 // alternatively call
 downsampler.prepareDeviceResources({ device, formats: [
-    { format: 'rgba8unorm' },
+    { format: 'rgba8unorm', precision: SPDPrecision.F16 },
     { format: 'r32float', filters: [ SPDFilters.Min ] },
 ]});
 ```
@@ -185,7 +185,8 @@ Custom filters for downsampling a quad to a single pixel can be registered with 
 The given WGSL code must at least define a reduction function with the following name and signature:
 
 ```wgsl
-fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32>
+// SPDFloat is an alias for either f32 or f16, depending on the configuration
+fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat>
 ```
 
 For example, a custom filter that only takes a single pixel value out of the four given ones could be implemented and used like this:
@@ -195,7 +196,7 @@ import { WebGPUSinglePassDownsampler } from 'webgpu-spd';
 
 const downsampler = new WebGPUSinglePassDownsampler();
 downsampler.registerFilter('upperLeft', `
-    fn spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32> {
+    fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat> {
         return v0;
     }
 `);

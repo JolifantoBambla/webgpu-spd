@@ -49,6 +49,19 @@ export declare class SPDPass {
     encode(computePassEncoder: GPUComputePassEncoder): GPUComputePassEncoder;
 }
 /**
+ * Float precision supported by WebGPU SPD.
+ */
+export declare enum SPDPrecision {
+    /**
+     * Full precision (32-bit) floats.
+     */
+    F32 = "f32",
+    /**
+     * Half precision (16-bit) floats.
+     */
+    F16 = "f16"
+}
+/**
  * Configuration for {@link WebGPUSinglePassDownsampler.preparePass}.
  */
 export interface SPDPassConfig {
@@ -82,6 +95,12 @@ export interface SPDPassConfig {
      * Defaults to target.mipLevelCount.
      */
     numMips?: number;
+    /**
+     * The float precision to use for downsampling.
+     * Falls back to {@link SPDPrecision.F32}, if {@link SPDPrecision.F16} is requested but not supported by the device (feature 'shader-f16' not enabled).
+     * Defaults to {@link SPDPrecision.F32}.
+     */
+    precision?: SPDPrecision;
 }
 export interface SPDPrepareFormatDescriptor {
     /**
@@ -93,6 +112,12 @@ export interface SPDPrepareFormatDescriptor {
      * Defaults to {@link SPDFilters.Average}.
      */
     filters?: Set<string>;
+    /**
+     * The float precision to use for this combination of texture format and filters.
+     * Falls back to {@link SPDPrecision.F32}, if {@link SPDPrecision.F16} is requested but not supported by the device (feature 'shader-f16' not enabled).
+     * Defaults to {@link SPDPrecision.F32}.
+     */
+    precision?: SPDPrecision;
 }
 export interface SPDPrepareDeviceDescriptor {
     /**
@@ -157,7 +182,7 @@ export declare class WebGPUSinglePassDownsampler {
      *
      * The given WGSL code must (at least) specify a function to reduce four values into one with the following name and signature:
      *
-     *   spd_reduce_4(v0: vec4<f32>, v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> vec4<f32>
+     *   spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat>
      *
      * @param name The unique name of the filter operation
      * @param wgsl The WGSL code to inject into the downsampling shader as the filter operation
