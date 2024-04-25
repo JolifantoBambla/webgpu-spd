@@ -15,12 +15,12 @@ npm install webgpu-spd
 
 ### From GitHub
 ```js
-import { WebGPUSinglePassDownsampler } from 'https://jolifantobambla.github.io/webgpu-spd/1.0.0/dist/index.js';
+import { WebGPUSinglePassDownsampler } from 'https://jolifantobambla.github.io/webgpu-spd/2.x/dist/index.js';
 ```
 
 ### From UNPKG
 ```js
-import { WebGPUSinglePassDownsampler } from 'https://unpkg.com/webgpu-spd@1.0.0/dist/index.js';
+import { WebGPUSinglePassDownsampler } from 'https://unpkg.com/webgpu-spd@2.0.0/dist/index.js';
 ```
 
 ## Usage
@@ -29,6 +29,8 @@ WebGPU SPD downsamples 2d textures and 2d texture arrays using compute pipelines
 Should the number of mip levels requested for a texture exceed this limit, multiple passes, generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels each, will be used instead.
 The mip levels generated for a given input texture are stored either in the input texture or in a separate target texture if specified.
 This output texture must support `GPUTextureUsage.STORAGE_BINDING` with access mode `"write-only"`.
+
+Try it out [here](https://jolifantobambla.github.io/webgpu-spd/demo).
 
 #### Generate mipmaps
 ```js
@@ -136,32 +138,37 @@ WebGPU SPD also supports allocating resources during setup, like this:
 import { WebGPUSinglePassDownsampler, SPDFilters, SPDPrecision } from 'webgpu-spd';
 
 const downsampler = new WebGPUSinglePassDownsampler({ device, formats: [
-    { format: 'rgba8unorm', precision: SPDPrecision.F16 },
+    { format: 'rgba8unorm', halfPrecision: true },
     { format: 'r32float', filters: [ SPDFilters.Min ] },
 ]});
 
 // alternatively call
 downsampler.prepareDeviceResources({ device, formats: [
-    { format: 'rgba8unorm', precision: SPDPrecision.F16 },
+    { format: 'rgba8unorm', halfPrecision: true },
     { format: 'r32float', filters: [ SPDFilters.Min ] },
 ]});
 ```
 
-#### Limit the number of array layers per pass
+#### Limit the number of mip levels and array layers per pass
 
-If more than 6 mip levels are downsampled per pass, WebGPU SPD allocates additional internal resources to store intermediate texture data (`16 * 64 * 64 * maxArrayLayers` bytes) and for control flow purposes (`4 * maxArrayLayers` bytes).
+Generating more than 6 mip levels per pass might not be supported on each platform due to buffers being not coherent by default yet.
+WebGPU SPD uses `min(device.limits.maxStorageTexturesPerPass, 12)` by default and can thus be implicitly configured using the device's limit.
+However, this might not be desirable in all cases, so WebGPU SPD can be configured to use a different limit by setting the corresponding option when preparing device resources.
+
+If more than 6 mip levels are downsampled per pass, WebGPU SPD allocates additional internal resources to store intermediate texture data (`16 * 64 * 64 * maxArrayLayersPerPass` bytes) and for control flow purposes (`4 * maxArrayLayersPerPass` bytes).
 The size of these resources depends on the number of array layers that can be downsampled each pass.
 If a texture's number of array layers exceeds the number of array layers per pass, multiple passes will be used instead.
 By default, WebGPU SPD uses the device's `maxTextureArrayLayers` limit.
-WebGPU SPD can be configured to use a different limit like this:
+
+WebGPU SPD can be configured to use different limits like this:
 
 ```js
 import { WebGPUSinglePassDownsampler, SPDFilters } from 'webgpu-spd';
 
-const downsampler = new WebGPUSinglePassDownsampler({ device, maxArrayLayers: 1 });
+const downsampler = new WebGPUSinglePassDownsampler({ device, maxMipsPerPass: 6, maxArrayLayersPerPass: 1 });
 
 // alternatively call
-downsampler.prepareDeviceResources({ device, maxArrayLayers: 1 });
+downsampler.prepareDeviceResources({ device, maxMipsPerPass: 6, maxArrayLayersPerPass: 1 });
 ```
 
 #### Handling device loss
@@ -185,9 +192,10 @@ Custom filters for downsampling a quad to a single pixel can be registered with 
 The given WGSL code must at least define a reduction function with the following name and signature:
 
 ```wgsl
-// SPDFloat is an alias for either f32 or f16, depending on the configuration
-fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat>
+fn spd_reduce_4(v0: vec4<SPDScalar>, v1: vec4<SPDScalar>, v2: vec4<SPDScalar>, v3: vec4<SPDScalar>) -> vec4<SPDScalar>
 ```
+
+If a filter is known to be only used with a single scalar type (e.g., `u32`), uses of `SPDScalar` can also be replaced by that scalar type.
 
 For example, a custom filter that only takes a single pixel value out of the four given ones could be implemented and used like this:
 
@@ -196,7 +204,7 @@ import { WebGPUSinglePassDownsampler } from 'webgpu-spd';
 
 const downsampler = new WebGPUSinglePassDownsampler();
 downsampler.registerFilter('upperLeft', `
-    fn spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat> {
+    fn spd_reduce_4(v0: vec4<SPDScalar>, v1: vec4<SPDScalar>, v2: vec4<SPDScalar>, v3: vec4<SPDScalar>) -> vec4<SPDScalar> {
         return v0;
     }
 `);
@@ -219,7 +227,7 @@ downsampler.generateMipmaps(device, texture, { offset: sizeHalf, size: sizeHalf}
 
 ## Contributions
 
-Contributions are very welcome. If you find a bug, please file an issue [here](https://github.com/JolifantoBambla/webgpu-spd/issues). If you feel some important functionality is missing, feel free to submit a pull request [here](https://github.com/JolifantoBambla/webgpu-spd/pulls).
+Contributions are very welcome. If you find a bug or think some important functionality is missing, please file an issue [here](https://github.com/JolifantoBambla/webgpu-spd/issues). If want to help out yourself, feel free to submit a pull request [here](https://github.com/JolifantoBambla/webgpu-spd/pulls).
 
 ## Acknowledgements
 

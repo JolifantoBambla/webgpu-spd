@@ -42,24 +42,15 @@ export declare class SPDPass {
     constructor(passes: Array<SPDPassInner>, target: GPUTexture);
     /**
      * Encodes the configured mipmap generation pass(es) with the given {@link GPUComputePassEncoder}.
-     * Resets bind groups at indices 0 and 1 are set to `null` to prevent unintentional bindings of internal bind groups for subsequent pipelines encoded in the same {@link GPUComputePassEncoder}.
+     * All bind groups indices used by {@link SPDPass} are reset to `null` to prevent unintentional bindings of internal bind groups for subsequent pipelines encoded in the same {@link GPUComputePassEncoder}.
      * @param computePassEncoder The {@link GPUComputePassEncoder} to encode this mipmap generation pass with.
      * @returns The {@link computePassEncoder}
      */
     encode(computePassEncoder: GPUComputePassEncoder): GPUComputePassEncoder;
-}
-/**
- * Float precision supported by WebGPU SPD.
- */
-export declare enum SPDPrecision {
     /**
-     * Full precision (32-bit) floats.
+     * Returns the number of passes that will be encoded by calling this instance's {@link SPDPass.encode} method.
      */
-    F32 = "f32",
-    /**
-     * Half precision (16-bit) floats.
-     */
-    F16 = "f16"
+    get numPasses(): number;
 }
 /**
  * Configuration for {@link WebGPUSinglePassDownsampler.preparePass}.
@@ -96,11 +87,12 @@ export interface SPDPassConfig {
      */
     numMips?: number;
     /**
-     * The float precision to use for downsampling.
-     * Falls back to {@link SPDPrecision.F32}, if {@link SPDPrecision.F16} is requested but not supported by the device (feature 'shader-f16' not enabled).
-     * Defaults to {@link SPDPrecision.F32}.
+     * If set to true, will try to use half-precision floats (`f16`) for this combination of texture format and filters.
+     * Falls back to full precision, if half precision is requested but not supported by the device (feature 'shader-f16' not enabled).
+     * Falls back to full precision, if the texture format is not a float format.
+     * Defaults to false.
      */
-    precision?: SPDPrecision;
+    halfPrecision?: boolean;
 }
 export interface SPDPrepareFormatDescriptor {
     /**
@@ -113,11 +105,12 @@ export interface SPDPrepareFormatDescriptor {
      */
     filters?: Set<string>;
     /**
-     * The float precision to use for this combination of texture format and filters.
-     * Falls back to {@link SPDPrecision.F32}, if {@link SPDPrecision.F16} is requested but not supported by the device (feature 'shader-f16' not enabled).
-     * Defaults to {@link SPDPrecision.F32}.
+     * If set to true, will try to use half-precision floats (`f16`) for this combination of texture format and filters.
+     * Falls back to full precision, if half precision is requested but not supported by the device (feature 'shader-f16' not enabled).
+     * Falls back to full precision, if the texture format is not a float format.
+     * Defaults to false.
      */
-    precision?: SPDPrecision;
+    halfPrecision?: boolean;
 }
 export interface SPDPrepareDeviceDescriptor {
     /**
@@ -131,9 +124,15 @@ export interface SPDPrepareDeviceDescriptor {
     /**
      * The maximum number of array layers will be downsampled on the {@link device} within a single pass.
      * If a texture has more, downsampling will be split up into multiple passes handling up to this limit of array layers each.
-     * Defaults to {@link device.limits.maxTextureArrayLayers}.
+     * Defaults to device.limits.maxTextureArrayLayers.
      */
-    maxArrayLayers?: number;
+    maxArrayLayersPerPass?: number;
+    /**
+     * The maximum number of mip levels that can be generated on the {@link device} within a single pass.
+     * Note that generating more than 6 mip levels per pass is currently not supported on all platforms.
+     * Defaults to `Math.min(device.limits.maxStorageTexturesPerShaderStage, 12)`.
+     */
+    maxMipsPerPass?: number;
 }
 /**
  * Returns the maximum number of mip levels for a given n-dimensional size.
@@ -148,6 +147,12 @@ export declare function maxMipLevelCount(...size: number[]): number;
 export declare class WebGPUSinglePassDownsampler {
     private filters;
     private devicePipelines;
+    /**
+     * The set of formats supported by WebGPU SPD.
+     *
+     * Note that `bgra8unorm` is only supported if the device feature `bgra8unorm-storage` is enabled.
+     */
+    readonly supportedFormats: Set<string>;
     /**
      * Sets the preferred device limits for {@link WebGPUSinglePassDownsampler} in a given record of limits.
      * Existing preferred device limits are either increased or left untouched.
@@ -182,7 +187,7 @@ export declare class WebGPUSinglePassDownsampler {
      *
      * The given WGSL code must (at least) specify a function to reduce four values into one with the following name and signature:
      *
-     *   spd_reduce_4(v0: vec4<SPDFloat>, v1: vec4<SPDFloat>, v2: vec4<SPDFloat>, v3: vec4<SPDFloat>) -> vec4<SPDFloat>
+     *   `spd_reduce_4(v0: vec4<SPDScalar>, v1: vec4<SPDScalar>, v2: vec4<SPDScalar>, v3: vec4<SPDScalar>) -> vec4<SPDScalar>`
      *
      * @param name The unique name of the filter operation
      * @param wgsl The WGSL code to inject into the downsampling shader as the filter operation
@@ -203,7 +208,7 @@ export declare class WebGPUSinglePassDownsampler {
      * Depending on the number of mip levels to generate and the device's `maxStorageTexturesPerShaderStage` limit, the {@link SPDPass} will internally consist of multiple passes, each generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels.
      *
      * @param device The device the {@link SPDPass} should be prepared for
-     * @param texture The texture that is to be processed by the {@link SPDPass}. Must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}. Must support {@link GPUTextureUsage.TEXTURE_BINDING}, and, if no other target is given {@link GPUTextureUsage.STORAGE_BINDING}.
+     * @param texture The texture that is to be processed by the {@link SPDPass}. Must support generating a {@link GPUTextureView} with {@link GPUTextureViewDimension:"2d-array"}. Must support {@link GPUTextureUsage.TEXTURE_BINDING}, and, if no other target is given, {@link GPUTextureUsage.STORAGE_BINDING}.
      * @param config The config for the {@link SPDPass}
      * @returns The prepared {@link SPDPass} or undefined if preparation failed or if no mipmaps would be generated.
      * @throws If the {@link GPUTextureFormat} of {@link SPDPassConfig.target} is not supported (does not support {@link GPUStorageTextureAccess:"write-only"} on the given {@link device}).

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebGPU SPD</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h2>Input Options</h2>
+            <form>
+            <div class="form-section">
+                <h3>Filter</h3>
+                <label for="filter">Filter:</label>
+                <select id="filter" name="filter">
+                <option value="average">Average</option>
+                <option value="min">Min</option>
+                <option value="max">Max</option>
+                <option value="minmax">MinMax</option>
+                <option value="custom">Custom</option>
+                </select>
+                <label for="customFilterCode">Custom Filter Code:</label>
+                <textarea id="customFilterCode" name="customFilterCode" rows="5" placeholder="Enter text here">fn spd_reduce_4(v0: vec4<SPDScalar>,v1: vec4<SPDScalar>, v2: vec4<SPDScalar>, v3: vec4<SPDScalar>) -> vec4<SPDScalar> { return v0; }</textarea>
+            </div>
+            <div class="form-section">
+                <h3>Region</h3>
+                <label for="offset">Offset (x,y):</label>
+                <div class="input-group">
+                    <input type="number" id="offsetX" name="offsetX" step="1" value="0" min="0">
+                    <input type="number" id="offsetY" name="offsetY" step="1" value="0" min="0">
+                </div>
+                <div class="form-section">
+                    <input type="checkbox" id="useRoiSize" name="showCoordinates">
+                    <label for="useRoiSize">Set region size</label>
+                </div>
+                <div id="roiSizeInput" class="additional-coordinates" style="display: none;">
+                    <label for="roiWidth">Size (width, height):</label>
+                    <div class="input-group">
+                        <input type="number" id="roiWidth" name="roiWidth" step="1" min="0" value="0">
+                        <input type="number" id="roiHeight" name="roiHeight" step="1" min="0" value="0">
+                    </div>
+                </div>
+            </div>
+            <div class="form-section">
+                <h3>Misc</h3>
+                <div class="form-section">
+                <input type="checkbox" id="intoTarget" name="intoTarget">
+                <label for="intoTarget">Into separate target</label>
+                </div>
+                <div class="form-section">
+                <input type="checkbox" id="halfPrecision" name="halfPrecision">
+                <label for="halfPrecision">Use half precision</label>
+                </div>
+            </div>
+            <div class="form-section">
+                <h3>Upload Image</h3>
+                <input type="file" id="texture" name="texture" accept="image/*">
+                <button id="generateForImageButton" type="button">Generate Mipmaps</button>
+            </div>
+            <div class="form-section">
+                <h3>Checkerboard</h3>
+                <label for="checkerboardSize">Size:</label>
+                <input type="number" id="checkerboardSize" name="size" min="1" max="4096" value="512" step="1">
+                <label for="checkerboardNumChannels">Num. channels:</label>
+                <input type="number" id="checkerboardNumChannels" name="checkerboardNumChannels" min="1" max="4" value="4" step="1">
+                <label for="checkerboardNumArrayLayers">Num. array layers:</label>
+                <input type="number" id="checkerboardNumArrayLayers" name="checkerboardNumArrayLayers" min="1" max="16" value="16" step="1">
+                <label for="scalarType">Scalar type:</label>
+                <select id="scalarType" name="scalarType">
+                <option value="f32">f32</option>
+                <option value="u32">u32</option>
+                <option value="i32">i32</option>
+                </select>
+                <button id="generateCheckerboardButton" type="button">Generate Mipmaps</button>
+            </div>
+            </form>
+            <hr> <!-- Horizontal line to separate sections -->
+            <h2>Display options</h2>
+            <div class="form-section">
+                <label for="mipLevelSlider">Mip level:</label>
+                <input type="range" id="mipLevelSlider" name="mipLevelSlider" min="0" max="0" value="0">
+                <output for="mipLevelSlider" id="mipLevelOutput">0</output>
+            </div>
+            <div class="form-section">
+                <label for="arrayLayerSlider">Array layer:</label>
+                <input type="range" id="arrayLayerSlider" name="arrayLayerSlider" min="0" max="0" value="0">
+                <output for="arrayLayerSlider" id="arrayLayerOutput">0</output>
+            </div>
+        </div>
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <script type="module">
+        import { WebGPUSinglePassDownsampler, maxMipLevelCount } from '../2.x/dist/index.js';
+        
+        function makeCheckerboardTextureData(size, numChannels, tileSize = 16, offset = 0, scalarType = 'f32') {
+            const data = new (scalarType === 'f32' ? Float32Array : scalarType === 'i32' ? Int32Array : Uint32Array)(size * size * numChannels);
+            for (let i = 0; i < size * size; ++i) {
+                const x = (offset + i) % size;
+                const y = Math.trunc(i / size);
+                const v = (Math.trunc(x / tileSize) + Math.trunc(y / tileSize)) % 2;
+                for (let c = 0; c < numChannels; ++c) {
+                    data[i * numChannels + c] = c === 3 ? 1 : v;
+                }
+            }
+            return data;
+        }
+
+        function makeCheckerboardTexture(device, size, numChannels, arrayLayers = 1, scalarType = 'f32', tileSize = 16) {
+            const texture = device.createTexture({
+                format: `${['r', 'rg', 'rgb', 'rgba'][numChannels - 1]}32${scalarType === 'f32' ? 'float' : scalarType === 'i32' ? 'sint' : 'uint'}`,
+                size: [size, size, arrayLayers],
+                mipLevelCount: maxMipLevelCount(size),
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST,
+            });
+            for (let i = 0; i < arrayLayers; ++i) {
+                device.queue.writeTexture(
+                    { texture, origin: [0, 0, i] },
+                    makeCheckerboardTextureData(size, numChannels, tileSize, i, scalarType),
+                    { bytesPerRow: size * numChannels * 4, rowsPerImage: size, },
+                    [size, size],
+                );
+            }
+            return texture;
+        }
+
+        async function main() {
+            const adapter = await navigator.gpu.requestAdapter();
+            const device = await adapter.requestDevice({requiredLimits: WebGPUSinglePassDownsampler.setPreferredLimits({}, adapter), requiredFeatures: adapter.features.has('shader-f16') ? ['shader-f16'] : []});
+            console.info(`got device ('maxStorageTexturesPerShaderstage': ${device.limits.maxStorageTexturesPerShaderStage}, 'shader-f16' enabled: ${device.features.has('shader-f16')})`);
+
+            const canvas = document.querySelector('canvas');
+            const context = canvas.getContext('webgpu');
+            const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+            context.configure({
+                device,
+                format: presentationFormat,
+            });
+
+            function makePipeline(scalarType) {
+                const module = device.createShaderModule({
+                    code: `
+                    struct Config {
+                        mip: u32,
+                        array_layer: u32,
+                    }
+                    
+                    @group(0) @binding(0) var texture: texture_2d_array<${scalarType}>;
+                    @group(0) @binding(1) var<uniform> config: Config;
+                        
+                    @vertex
+                    fn vertex(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+                        return vec4(vec2(f32((vertex_index << 1) & 2), f32(vertex_index & 2)) * 2 - 1, 0, 1);
+                    }
+                    
+                    @fragment
+                    fn fragment(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
+                        let texture_size = textureDimensions(texture, config.mip);
+                        let texture_coords = vec2<u32>(floor(coord.xy));
+                        if texture_coords.x < texture_size.x && texture_coords.y < texture_size.y {
+                            return vec4(vec3<f32>(textureLoad(texture, vec2<i32>(floor(coord.xy)), config.array_layer, config.mip).rgb), 1.0);
+                        } else {
+                            return vec4(0.0, 0.0, 0.0, 1.0);
+                        }
+                    }
+                    `,
+                });
+                return device.createRenderPipeline({
+                    layout: 'auto',
+                    vertex: {
+                        module,
+                        entryPoint: 'vertex',
+                    },
+                    fragment: {
+                        module,
+                        entryPoint: 'fragment',
+                        targets: [{ format: presentationFormat }],
+                    },
+                });
+            }
+            const pipeline = {
+                f32: makePipeline('f32'),
+                i32: makePipeline('i32'),
+                u32: makePipeline('u32'),
+            };
+
+            const downsampler = new WebGPUSinglePassDownsampler();
+
+            const buffer = device.createBuffer({
+                size: 8,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+            });
+            
+            let bindGroup = undefined;
+            let currentScalarType = 'f32';
+            const render = (mip = 0, arrayLayer = 0) => {
+                if (bindGroup) {
+                    device.queue.writeBuffer(buffer, 0, new Uint32Array([mip, arrayLayer]));
+                    
+                    const encoder = device.createCommandEncoder();
+
+                    const pass = encoder.beginRenderPass({
+                        colorAttachments: [{
+                            view: context.getCurrentTexture().createView(),
+                            clearValue: [0,0,0,0],
+                            loadOp: 'clear',
+                            storeOp: 'store',
+                        }],
+                    });
+                    pass.setPipeline(pipeline[currentScalarType]);
+                    pass.setBindGroup(0, bindGroup);
+                    pass.draw(3);
+                    pass.end();
+
+                    device.queue.submit([encoder.finish()]);
+                }
+            }
+
+            const mipLevelSlider = document.getElementById('mipLevelSlider');
+            const mipLevelOutput = document.getElementById('mipLevelOutput');
+            const arrayLayerSlider = document.getElementById('arrayLayerSlider');
+            const arrayLayerOutput = document.getElementById('arrayLayerOutput');
+            mipLevelSlider.addEventListener('input', _ => {
+                mipLevelOutput.textContent = mipLevelSlider.value;
+                render(mipLevelSlider.value, arrayLayerSlider.value);
+            });
+            arrayLayerSlider.addEventListener('input', _ => {
+                arrayLayerOutput.textContent = arrayLayerSlider.value;
+                render(mipLevelSlider.value, arrayLayerSlider.value);
+            });
+
+            const filterDropdown = document.getElementById('filter');
+            const customFilterCode = document.getElementById('customFilterCode');
+
+            const offsetX = document.getElementById('offsetX');
+            const offsetY = document.getElementById('offsetY');
+            const useRoiSize = document.getElementById('useRoiSize');
+            const roiSizeInput = document.getElementById('roiSizeInput');
+            const roiWidth = document.getElementById('roiWidth');
+            const roiHeight = document.getElementById('roiHeight');
+
+            useRoiSize.addEventListener('change', _ => {
+                roiSizeInput.style.display = useRoiSize.checked ? 'block' : 'none';
+            });
+
+            const intoTarget = document.getElementById('intoTarget');
+            const halfPrecision = document.getElementById('halfPrecision');
+
+            const onNewTexture = texture => {
+                if (filterDropdown.value === 'custom') {
+                    downsampler.registerFilter('custom', customFilterCode.value);
+                }
+                const target = !intoTarget.checked ? texture : device.createTexture({
+                    format: texture.format,
+                    mipLevelCount: texture.mipLevelCount - 1,
+                    size: [texture.width / 2, texture.height / 2, texture.depthOrArrayLayers],
+                    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+                });
+                const config = {
+                    filter: filterDropdown.value,
+                    offset: [offsetX.value, offsetY.value],
+                    size: useRoiSize.checked ? [roiWidth.value, roiHeight.value] : [texture.width, texture.height],
+                    target,
+                    precision: halfPrecision.checked ? 'f16' : 'f32',
+                };
+                if (!downsampler.generateMipmaps(device, texture, config)) {
+                    console.warn(`could not downsample texture generated from ${textureUrl}`);
+                    return;
+                }
+
+                canvas.width = target.width;
+                canvas.height = target.height;
+                mipLevelSlider.value = 0;
+                arrayLayerSlider.value = 0;
+                mipLevelOutput.textContent = 0;
+                arrayLayerOutput.textContent = 0;
+
+                bindGroup = device.createBindGroup({
+                    layout: pipeline[currentScalarType].getBindGroupLayout(0),
+                    entries: [
+                        {
+                            binding: 0,
+                            resource: target.createView({
+                                dimension: '2d-array',
+                                mipLevelCount: target.mipLevelCount,
+                                arrayLayerCount: target.depthOrArrayLayers,
+                            }),
+                        },
+                        { binding: 1, resource: { buffer }},
+                    ]
+                });
+
+                mipLevelSlider.max = target.mipLevelCount - 1;
+                mipLevelSlider.value = 0;
+                
+                arrayLayerSlider.max = target.depthOrArrayLayers - 1;
+                arrayLayerSlider.value = 0;
+
+                render();
+            }
+
+            const textureInput = document.getElementById('texture');
+            const generateForImageButton = document.getElementById('generateForImageButton');
+            generateForImageButton.addEventListener('click', _ => {
+                if (textureInput.files.length) {
+                    createImageBitmap(textureInput.files[0], { colorSpaceConversion: 'none' }).then(source => {
+                        const texture = device.createTexture({
+                            // todo: different formats?
+                            format: 'rgba8unorm',
+                            mipLevelCount: 1 + Math.log2(Math.max(source.width, source.height)),
+                            size: [source.width, source.height],
+                            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+                        });
+                        device.queue.copyExternalImageToTexture({ source, }, { texture }, { width: source.width, height: source.height });
+                        currentScalarType = 'f32';
+                        onNewTexture(texture);
+                    }).catch(console.error);
+                }
+            });
+
+            const checkerboardSize = document.getElementById('checkerboardSize');
+            const checkerboardNumChannels = document.getElementById('checkerboardNumChannels');
+            const checkerboardNumArrayLayers = document.getElementById('checkerboardNumArrayLayers');
+            const scalarTypeDropdown = document.getElementById('scalarType');
+            const generateCheckerboardButton = document.getElementById('generateCheckerboardButton');
+            generateCheckerboardButton.addEventListener('click', _ => {
+                const scalarType = scalarTypeDropdown.value;
+                const numChannels = checkerboardNumChannels.value == 3 ? 4 : checkerboardNumChannels.value;
+                const texture = makeCheckerboardTexture(device, checkerboardSize.value, numChannels, checkerboardNumArrayLayers.value, scalarType);
+                currentScalarType = scalarType;
+                onNewTexture(texture);
+            })
+        }
+        main();
+    </script>
+</body>
+</html>
