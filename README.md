@@ -4,7 +4,9 @@ A utility library for generating up to 12 mip levels for 2d textures & texture a
 
 ## Docs
 
-See [here](https://jolifantobambla.github.io/webgpu-spd).
+Find the docs [here](https://jolifantobambla.github.io/webgpu-spd).
+
+Try it out [here](https://jolifantobambla.github.io/webgpu-spd/demo).
 
 ## Installation
 
@@ -29,8 +31,6 @@ WebGPU SPD downsamples 2d textures and 2d texture arrays using compute pipelines
 Should the number of mip levels requested for a texture exceed this limit, multiple passes, generating up to `min(maxStorageTexturesPerShaderStage, 12)` mip levels each, will be used instead.
 The mip levels generated for a given input texture are stored either in the input texture or in a separate target texture if specified.
 This output texture must support `GPUTextureUsage.STORAGE_BINDING` with access mode `"write-only"`.
-
-Try it out [here](https://jolifantobambla.github.io/webgpu-spd/demo).
 
 #### Generate mipmaps
 ```js
