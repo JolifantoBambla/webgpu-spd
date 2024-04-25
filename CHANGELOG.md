@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v2.0.0] - 2024-04-25
+
 ### Added
 
  - Add support for specifying the maximum number of array layers that can be downsampled per pass when configuring the device using `SPDPrepareDeviceDescriptor.maxArrayLayersPerPass`.
