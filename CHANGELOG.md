@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [v2.0.1] - 2024-06-20
+
+### Fixed
+
+ - Fix handling of cases where a texture's number of array layers exceeds the maximum number of array layers per pass.
+
 ## [v2.0.0] - 2024-04-25
 
 ### Added

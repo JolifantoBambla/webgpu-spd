@@ -817,7 +817,7 @@ class DevicePipelines {
             return undefined;
         }
         const passes = [];
-        for (let baseArrayLayer = 0; baseArrayLayer < this.maxArrayLayers - 1; baseArrayLayer += this.maxArrayLayers) {
+        for (let baseArrayLayer = 0; baseArrayLayer < target.depthOrArrayLayers; baseArrayLayer += this.maxArrayLayers) {
             const numArrayLayersThisPass = Math.min(target.depthOrArrayLayers - baseArrayLayer, this.maxArrayLayers);
             for (let baseMip = 0; baseMip < numMipsTotal - 1; baseMip += this.maxMipsPerPass) {
                 const numMipsThisPass = Math.min(numMipsTotal - 1 - baseMip, this.maxMipsPerPass);
