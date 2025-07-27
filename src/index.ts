@@ -1,8 +1,8 @@
 function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE, numMips: number, scalarType: SPDScalarType): string {
     const texelType = scalarType === SPDScalarType.I32 ? 'i32' : (scalarType === SPDScalarType.U32 ? 'u32' : 'f32');
     const useF16 = scalarType === SPDScalarType.F16;
-    
-    const filterCode = filterOp === SPD_FILTER_AVERAGE && !['f32', 'f16'].includes(texelType) ? filterOp.replace('* 0.25', '/ 4') : filterOp;
+
+    const filterCode = filterOp === SPD_FILTER_AVERAGE && !['f32', 'f16'].includes(texelType) ? filterOp.replace('* SPDScalar(0.25)', '/ 4') : filterOp;
 
     const mipsBindings = Array(numMips).fill(0)
         .map((_, i) => `@group(0) @binding(${i + 1}) var dst_mip_${i + 1}: texture_storage_2d_array<${outputFormat}, write>;`)
@@ -496,7 +496,7 @@ fn downsample(@builtin(local_invocation_index) local_invocation_index: u32, @bui
 
 const SPD_FILTER_AVERAGE: string = /* wgsl */`
 fn spd_reduce_4(v0: vec4<SPDScalar>, v1: vec4<SPDScalar>, v2: vec4<SPDScalar>, v3: vec4<SPDScalar>) -> vec4<SPDScalar> {
-    return (v0 + v1 + v2 + v3) * 0.25;
+    return (v0 + v1 + v2 + v3) * SPDScalar(0.25);
 }
 `;
 
