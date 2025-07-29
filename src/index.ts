@@ -637,13 +637,13 @@ export enum SPDFilters {
 }
 
 class SPDPassInner {
-    constructor(private pipeline: GPUComputePipeline, private bindGroups: Array<GPUBindGroup>, private dispatchDimensions: [number, number, number]) {}
+    constructor(private pipeline: GPUComputePipeline, private bindGroups: Array<GPUBindGroup>, private dispatchDimensions: [GPUSize32, GPUSize32, GPUSize32]) {}
     encode(computePass: GPUComputePassEncoder) {
         computePass.setPipeline(this.pipeline);
         this.bindGroups.forEach((bindGroup, index) => {
             computePass.setBindGroup(index, bindGroup);
         });
-        computePass.dispatchWorkgroups(...this.dispatchDimensions);
+        computePass.dispatchWorkgroups(this.dispatchDimensions[0], this.dispatchDimensions[1], this.dispatchDimensions[2]);
     }
 }
 
@@ -807,7 +807,7 @@ function sanitizeScalarType(device: GPUDevice, format: GPUTextureFormat, halfPre
     if (halfPrecision && texelType !== SPDScalarType.F32) {
         console.warn(`[sanitizeScalarType]: half precision requested for non-float format (${format}, uses ${texelType}), falling back to full precision`);
     }
-    return halfPrecision === true && !device.features.has('shader-f16') && texelType === SPDScalarType.F32 ? SPDScalarType.F16 : texelType;
+    return halfPrecision && !device.features.has('shader-f16') && texelType === SPDScalarType.F32 ? SPDScalarType.F16 : texelType;
 }
 
 class DevicePipelines {
