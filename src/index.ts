@@ -160,7 +160,7 @@ fn spd_increase_atomic_counter(slice: u32) {
 }
 
 fn spd_get_atomic_counter() -> u32 {
-    return atomicLoad(&spd_counter);
+    return workgroupUniformLoad(&spd_counter);
 }
 
 fn spd_reset_atomic_counter(slice: u32) {
@@ -180,7 +180,7 @@ fn spd_exit_workgroup(num_work_groups: u32, local_invocation_index: u32, slice: 
     if (local_invocation_index == 0) {
         spd_increase_atomic_counter(slice);
     }
-    spd_barrier();
+    storageBarrier();
     return spd_get_atomic_counter() != (num_work_groups - 1);
 }
 
@@ -396,38 +396,30 @@ fn spd_downsample_next_four(x: u32, y: u32, workgroup_id: vec2<u32>, local_invoc
     spd_downsample_mip_5(workgroup_id, local_invocation_index, base_mip + 3, slice);
 }
 
-fn spd_downsample_last_four(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, base_mip: u32, mips: u32, slice: u32, exit: bool) {
+fn spd_downsample_last_four(x: u32, y: u32, workgroup_id: vec2<u32>, local_invocation_index: u32, base_mip: u32, mips: u32, slice: u32) {
     if mips <= base_mip {
         return;
     }
     spd_barrier();
-    if !exit {
-        spd_downsample_mip_2(x, y, workgroup_id, local_invocation_index, base_mip, slice);
-    }
+    spd_downsample_mip_2(x, y, workgroup_id, local_invocation_index, base_mip, slice);
 
     if mips <= base_mip + 1 {
         return;
     }
     spd_barrier();
-    if !exit {
-        spd_downsample_mip_3(x, y, workgroup_id, local_invocation_index, base_mip + 1, slice);
-    }
+    spd_downsample_mip_3(x, y, workgroup_id, local_invocation_index, base_mip + 1, slice);
 
     if mips <= base_mip + 2 {
         return;
     }
     spd_barrier();
-    if !exit {
-        spd_downsample_mip_4(x, y, workgroup_id, local_invocation_index, base_mip + 2, slice);
-    }
+    spd_downsample_mip_4(x, y, workgroup_id, local_invocation_index, base_mip + 2, slice);
 
     if mips <= base_mip + 3 {
         return;
     }
     spd_barrier();
-    if !exit {
-        spd_downsample_mip_5(workgroup_id, local_invocation_index, base_mip + 3, slice);
-    }
+    spd_downsample_mip_5(workgroup_id, local_invocation_index, base_mip + 3, slice);
 }
 
 fn spd_downsample_mips_6_7(x: u32, y: u32, mips: u32, slice: u32) {
@@ -468,20 +460,19 @@ fn spd_downsample_last_6(x: u32, y: u32, local_invocation_index: u32, mips: u32,
 
     // increase the global atomic counter for the given slice and check if it's the last remaining thread group:
     // terminate if not, continue if yes.
-    let exit = spd_exit_workgroup(num_work_groups, local_invocation_index, slice);
-
-    // can't exit directly because subsequent barrier calls break uniform control flow...
-    if !exit {
-        // reset the global atomic counter back to 0 for the next spd dispatch
-        spd_reset_atomic_counter(slice);
-
-        // After mip 5 there is only a single workgroup left that downsamples the remaining up to 64x64 texels.
-        // compute MIP level 6 and 7
-        spd_downsample_mips_6_7(x, y, mips, slice);
+    if spd_exit_workgroup(num_work_groups, local_invocation_index, slice) {
+        return;
     }
 
+    // reset the global atomic counter back to 0 for the next spd dispatch
+    spd_reset_atomic_counter(slice);
+
+    // After mip 5 there is only a single workgroup left that downsamples the remaining up to 64x64 texels.
+    // compute MIP level 6 and 7
+    spd_downsample_mips_6_7(x, y, mips, slice);
+
     // compute MIP level 8, 9, 10, 11
-    spd_downsample_last_four(x, y, vec2<u32>(0, 0), local_invocation_index, 8, mips, slice, exit);
+    spd_downsample_last_four(x, y, vec2<u32>(0, 0), local_invocation_index, 8, mips, slice);
 }
 
 /// Downsamples a 64x64 tile based on the work group id.
