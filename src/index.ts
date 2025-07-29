@@ -1116,15 +1116,12 @@ export class WebGPUSinglePassDownsampler {
 
     /**
      * The set of formats supported by WebGPU SPD.
-     *
-     * Note that `bgra8unorm` is only supported if the device feature `bgra8unorm-storage` is enabled.
      */
     readonly supportedFormats: Set<string> = new Set([
         'rgba8unorm',
         'rgba8snorm',
         'rgba8uint',
         'rgba8sint',
-        'bgra8unorm', // if bgra8unorm-storage is enabled
         'rgba16uint',
         'rgba16sint',
         'rgba16float',
@@ -1137,6 +1134,42 @@ export class WebGPUSinglePassDownsampler {
         'rgba32uint',
         'rgba32sint',
         'rgba32float',
+    ]);
+
+    /**
+     * The set of additionally supported formats supported if the feature 'bgra8unorm-storage' is enabled.
+     */
+    readonly supportedFormatsBgra8UnormStorage: Set<string> = new Set([
+        'bgra8unorm',
+    ]);
+
+    /**
+     * The set of additionally supported formats if the feature 'texture-formats-tier1' is enabled.
+     */
+    readonly supportedFormatsTier1: Set<string> = new Set([
+        'r8unorm',
+        'r8snorm',
+        'r8uint',
+        'r8sint',
+        'rg8unorm',
+        'rg8snorm',
+        'rg8uint',
+        'rg8sint',
+        'r16unorm',
+        'r16snorm',
+        'r16uint',
+        'r16sint',
+        'r16float',
+        'rg16unorm',
+        'rg16snorm',
+        'rg16uint',
+        'rg16sint',
+        'rg16float',
+        'rgba16unorm',
+        'rgba16snorm',
+        'rgb10a2uint',
+        'rgb10a2unorm',
+        'rg11b10ufloat',
     ]);
 
     /**
@@ -1259,8 +1292,11 @@ export class WebGPUSinglePassDownsampler {
             console.warn(`[WebGPUSinglePassDownsampler::prepare]: no mips to create (numMips = ${numMips})`);
             return undefined;
         }
-        if (!this.supportedFormats.has(target.format)) {
-            throw new Error(`[WebGPUSinglePassDownsampler::prepare]: format ${target.format} not supported. (Supported formats: ${this.supportedFormats})`);
+        if (!(this.supportedFormats.has(target.format) ||
+            (device.features.has('bgra8unorm-storage') && this.supportedFormatsBgra8UnormStorage.has(target.format)) ||
+            ((device.features.has('texture-formats-tier1') || device.features.has('texture-formats-tier2')) && this.supportedFormatsTier1.has(target.format))))
+        {
+            throw new Error(`[WebGPUSinglePassDownsampler::prepare]: format ${target.format} not supported. (Supported formats: ${this.supportedFormats}, and ${this.supportedFormatsBgra8UnormStorage} (if 'bgra8unorm-storage' is enabled), and ${this.supportedFormatsTier1} (if 'texture-formats-tier1' is enabled))`);
         }
         if (target.format === 'bgra8unorm' && !device.features.has('bgra8unorm-storage')) {
             throw new Error(`[WebGPUSinglePassDownsampler::prepare]: format ${target.format} not supported without feature 'bgra8unorm-storage' enabled`);
