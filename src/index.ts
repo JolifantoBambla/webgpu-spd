@@ -144,7 +144,15 @@ ${mipsAccessor}
 
 // Workgroup -----------------------------------------------------------------------------------------------------------
 
-var<workgroup> spd_intermediate: array<array<vec4<SPDScalar>, 16>, 16>;
+${useF16 ? `
+var<workgroup> spd_intermediate_rg: array<array<vec2<SPDScalar>, 16>, 16>;
+var<workgroup> spd_intermediate_bg: array<array<vec2<SPDScalar>, 16>, 16>;
+`: `
+var<workgroup> spd_intermediate_r: array<array<SPDScalar, 16>, 16>;
+var<workgroup> spd_intermediate_g: array<array<SPDScalar, 16>, 16>;
+var<workgroup> spd_intermediate_b: array<array<SPDScalar, 16>, 16>;
+var<workgroup> spd_intermediate_a: array<array<SPDScalar, 16>, 16>;
+`}
 var<workgroup> spd_counter: atomic<u32>;
 
 fn spd_increase_atomic_counter(slice: u32) {
@@ -185,11 +193,24 @@ fn spd_store(pix: vec2<u32>, out_value: vec4<SPDScalar>, mip: u32, slice: u32) {
 }
 
 fn spd_load_intermediate(x: u32, y: u32) -> vec4<SPDScalar> {
-    return spd_intermediate[x][y];
+    return vec4<SPDScalar>(${useF16 ? `
+        spd_intermediate_rg[x][y],
+        spd_intermediate_ba[x][y],` : `
+        spd_intermediate_r[x][y],
+        spd_intermediate_g[x][y],
+        spd_intermediate_b[x][y],
+        spd_intermediate_a[x][y],`
+    });
 }
 
 fn spd_store_intermediate(x: u32, y: u32, value: vec4<SPDScalar>) {
-    spd_intermediate[x][y] = value;
+${useF16 ? `
+        spd_intermediate_rg[x][y] = value.rg;
+        spd_intermediate_ba[x][y] = value.ba;` : `
+        spd_intermediate_r[x][y] = value.r;
+        spd_intermediate_g[x][y] = value.g;
+        spd_intermediate_b[x][y] = value.b;
+        spd_intermediate_a[x][y] = value.a;`}
 }
 
 fn spd_reduce_intermediate(i0: vec2<u32>, i1: vec2<u32>, i2: vec2<u32>, i3: vec2<u32>) -> vec4<SPDScalar> {
