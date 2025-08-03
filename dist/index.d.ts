@@ -26,7 +26,7 @@ declare class SPDPassInner {
     private pipeline;
     private bindGroups;
     private dispatchDimensions;
-    constructor(pipeline: GPUComputePipeline, bindGroups: Array<GPUBindGroup>, dispatchDimensions: [number, number, number]);
+    constructor(pipeline: GPUComputePipeline, bindGroups: Array<GPUBindGroup>, dispatchDimensions: [GPUSize32, GPUSize32, GPUSize32]);
     encode(computePass: GPUComputePassEncoder): void;
 }
 /**
@@ -133,6 +133,10 @@ export interface SPDPrepareDeviceDescriptor {
      * Defaults to `Math.min(device.limits.maxStorageTexturesPerShaderStage, 12)`.
      */
     maxMipsPerPass?: number;
+    /**
+     * If true, disables all uses of subgroup built-ins by the downsampler even if the `'subgroups'` feature is enabled on the {@link device}.
+     */
+    disableSubgroups?: boolean;
 }
 /**
  * Returns the maximum number of mip levels for a given n-dimensional size.
@@ -149,10 +153,24 @@ export declare class WebGPUSinglePassDownsampler {
     private devicePipelines;
     /**
      * The set of formats supported by WebGPU SPD.
-     *
-     * Note that `bgra8unorm` is only supported if the device feature `bgra8unorm-storage` is enabled.
      */
-    readonly supportedFormats: Set<string>;
+    static readonly supportedFormats: Set<string>;
+    /**
+     * The set of additionally supported formats supported if the feature 'bgra8unorm-storage' is enabled.
+     */
+    static readonly supportedFormatsBgra8UnormStorage: Set<string>;
+    /**
+     * The set of additionally supported formats if the feature 'texture-formats-tier1' is enabled.
+     */
+    static readonly supportedFormatsTier1: Set<string>;
+    /**
+     * The set of formats that support read-write access.
+     */
+    static readonly supportedReadWriteFormats: Set<string>;
+    /**
+     * The set of formats that support read-write access if the feature 'texture-formats-tier2' is enabled.
+     */
+    static readonly supportedReadWriteFormatsTier2: Set<string>;
     /**
      * Sets the preferred device limits for {@link WebGPUSinglePassDownsampler} in a given record of limits.
      * Existing preferred device limits are either increased or left untouched.

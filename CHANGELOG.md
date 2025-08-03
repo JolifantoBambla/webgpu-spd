@@ -10,6 +10,7 @@
 
 - Use subgroup built-ins for downsampling by default if the device feature [subgroups](https://www.w3.org/TR/webgpu/#subgroups) is enabled.
 - Move texture format `bgra8unorm` out of `WebGPUSinglePassDownsampler::supportedFormats`.
+- If the texture format supports it, bind mip 6 as `'read-write'` storage texture instead of duplicating texture data in an extra buffer in case more than 6 mips are generated per pass. 
 
 ### Fixed
 
