@@ -93,8 +93,8 @@
     </div>
 
     <script type="module">
-        import { WebGPUSinglePassDownsampler, maxMipLevelCount } from '../2.x/dist/index.js';
-        
+        import { WebGPUSinglePassDownsampler, maxMipLevelCount } from '../3.x/dist/index.js';
+
         function makeCheckerboardTextureData(size, numChannels, tileSize = 16, offset = 0, scalarType = 'f32') {
             const data = new (scalarType === 'f32' ? Float32Array : scalarType === 'i32' ? Int32Array : Uint32Array)(size * size * numChannels);
             for (let i = 0; i < size * size; ++i) {

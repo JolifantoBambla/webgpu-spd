@@ -17,12 +17,12 @@ npm install webgpu-spd
 
 ### From GitHub
 ```js
-import { WebGPUSinglePassDownsampler } from 'https://jolifantobambla.github.io/webgpu-spd/2.x/dist/index.js';
+import { WebGPUSinglePassDownsampler } from 'https://jolifantobambla.github.io/webgpu-spd/3.x/dist/index.js';
 ```
 
 ### From UNPKG
 ```js
-import { WebGPUSinglePassDownsampler } from 'https://unpkg.com/webgpu-spd@2.0.0/dist/index.js';
+import { WebGPUSinglePassDownsampler } from 'https://unpkg.com/webgpu-spd@3.0.0/dist/index.js';
 ```
 
 ## Usage

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v3.0.0] - 2025-08-03
+
 ### Added
 
 - Add support for texture formats enabled by the device feature [texture-formats-tier1](https://www.w3.org/TR/webgpu/#texture-formats-tier1).
@@ -17,7 +19,6 @@
 - Fix handling of barriers for active workgroup counter.
 - Cast downsampling weight to concrete scalar type for average filter.
 - Fix minor typing issues.
-
 
 ## [v2.0.1] - 2024-06-20
 
