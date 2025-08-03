@@ -1,17 +1,22 @@
-function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE, numMips: number, scalarType: SPDScalarType, hasSubgroups: boolean): string {
+function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVERAGE, numMips: number, scalarType: SPDScalarType, hasSubgroups: boolean, mip6SupportsReadWrite: boolean): string {
     const texelType = scalarType === SPDScalarType.I32 ? 'i32' : (scalarType === SPDScalarType.U32 ? 'u32' : 'f32');
     const useF16 = scalarType === SPDScalarType.F16;
 
     const filterCode = filterOp === SPD_FILTER_AVERAGE && !['f32', 'f16'].includes(texelType) ? filterOp.replace('* SPDScalar(0.25)', '/ 4') : filterOp;
 
     const mipsBindings = Array(numMips).fill(0)
-        .map((_, i) => `@group(0) @binding(${i + 1}) var dst_mip_${i + 1}: texture_storage_2d_array<${outputFormat}, write>;`)
+        .map((_, i) => {
+            if (i == 5 && numMips > 6 && mip6SupportsReadWrite) {
+                return `@group(0) @binding(6) var dst_mip_6: texture_storage_2d_array<${outputFormat}, read_write>;`;
+            }
+            return `@group(0) @binding(${i + 1}) var dst_mip_${i + 1}: texture_storage_2d_array<${outputFormat}, write>;`;
+        })
         .join('\n');
 
     // todo: get rid of this branching as soon as WGSL supports arrays of texture_storage_2d_array
     const mipsAccessorBody = Array(numMips).fill(0)
         .map((_, i) => {
-            if (i == 5 && numMips > 6) {
+            if (i == 5 && numMips > 6 && !mip6SupportsReadWrite) {
                 return ` else if mip == 6 {
                     textureStore(dst_mip_6, uv, slice, ${useF16 ? `vec4<${texelType}>(value)` : 'value'});
                     mip_dst_6_buffer[slice][uv.y][uv.x] = value;
@@ -24,7 +29,7 @@ function makeShaderCode(outputFormat: string, filterOp: string = SPD_FILTER_AVER
         .join('');
 
     const mipsAccessor = `fn store_dst_mip(value: vec4<SPDScalar>, uv: vec2<u32>, slice: u32, mip: u32) {\n${mipsAccessorBody}\n}`
-    const midMipAccessor =`return mip_dst_6_buffer[slice][uv.y][uv.x];`;
+    const midMipAccessor = mip6SupportsReadWrite ? `return vec4<SPDScalar>(textureLoad(dst_mip_6, uv, slice));` : `return mip_dst_6_buffer[slice][uv.y][uv.x];`;
 
     return /* wgsl */`
     // This file is part of the FidelityFX SDK.
@@ -120,6 +125,7 @@ ${mipsBindings}
 
 @group(1) @binding(0) var<uniform> downsample_pass_meta : DownsamplePassMeta;
 @group(1) @binding(1) var<storage, read_write> spd_global_counter: array<atomic<u32>>;
+// this is only used if read_write access is not supported for the texture format
 @group(1) @binding(2) var<storage, read_write> mip_dst_6_buffer: array<array<array<vec4<f32>, 64>, 64>>;
 
 fn get_mips() -> u32 {
@@ -501,6 +507,8 @@ fn spd_downsample_last_four(x: u32, y: u32, workgroup_id: vec2<u32>, local_invoc
 }
 
 fn spd_downsample_mips_6_7(x: u32, y: u32, mips: u32, slice: u32) {
+    ${mip6SupportsReadWrite ? 'textureBarrier();' : ''}
+
     var tex = vec2<u32>(x * 4 + 0, y * 4 + 0);
     var pix = vec2<u32>(x * 2 + 0, y * 2 + 0);
     let v0 = spd_reduce_load_mid_mip_4(tex, slice);
@@ -817,6 +825,7 @@ class DevicePipelines {
     private readonly disableSubgroups: boolean;
     private readonly internalResourcesBindGroupLayout: GPUBindGroupLayout;
     private readonly internalResourcesBindGroupLayout12?: GPUBindGroupLayout;
+    private readonly internalResourcesBindGroupLayout12RW?: GPUBindGroupLayout;
     private atomicCounters: Map<number, GPUBuffer>;
     private midMipBuffers: Map<number, GPUBuffer>;
     private pipelines: Map<GPUTextureFormat, Map<SPDScalarType, Map<string, Map<number, SPDPipeline>>>>;
@@ -874,6 +883,28 @@ class DevicePipelines {
                     },
                 ],
             });
+            this.internalResourcesBindGroupLayout12RW = device.createBindGroupLayout({
+                entries: [
+                    {
+                        binding: 0,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: {
+                            type: 'uniform',
+                            hasDynamicOffset: false,
+                            minBindingSize: 16,
+                        },
+                    },
+                    {
+                        binding: 1,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: {
+                            type: 'storage',
+                            hasDynamicOffset: false,
+                            minBindingSize: 4,
+                        },
+                    },
+                ],
+            });
         }
     }
 
@@ -891,11 +922,22 @@ class DevicePipelines {
         }
     }
 
+    private supportsReadWrite(targetFormat: GPUTextureFormat): boolean {
+        const device = this.device.deref();
+        if (!device) {
+            return false;
+        }
+        return WebGPUSinglePassDownsampler.supportedReadWriteFormats.has(targetFormat) || (device.features.has('texture-formats-tier2') && WebGPUSinglePassDownsampler.supportedReadWriteFormatsTier2.has(targetFormat));
+    }
+
     private createPipeline(targetFormat: GPUTextureFormat, filterCode: string, numMips: number, scalarType: SPDScalarType): SPDPipeline | undefined {
         const device = this.device.deref();
         if (!device) {
             return undefined;
         }
+
+        const rwSupport = this.supportsReadWrite(targetFormat);
+
         const mipsBindGroupLayout = device.createBindGroupLayout({
             entries: Array(Math.min(numMips, this.maxMipsPerPass) + 1).fill(0).map((_, i) => {
                 const entry: GPUBindGroupLayoutEntry = {
@@ -910,7 +952,7 @@ class DevicePipelines {
                     };
                 } else {
                     entry.storageTexture = {
-                        access: 'write-only',
+                        access: (i === 6 && numMips > 6 && rwSupport) ? 'read-write' : 'write-only',
                         format: targetFormat,
                         viewDimension: '2d-array',
                     };
@@ -924,14 +966,14 @@ class DevicePipelines {
             device.createComputePipeline({
                 compute: {
                     module: device.createShaderModule({
-                        code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass), scalarType, device.features.has('subgroups') && !this.disableSubgroups),
+                        code: makeShaderCode(targetFormat, filterCode, Math.min(numMips, this.maxMipsPerPass), scalarType, device.features.has('subgroups') && !this.disableSubgroups, rwSupport),
                     }),
                     entryPoint: 'downsample',
                 },
                 layout: device.createPipelineLayout({
                     bindGroupLayouts: [
                         mipsBindGroupLayout,
-                        numMips > 6 ? this.internalResourcesBindGroupLayout12! : this.internalResourcesBindGroupLayout,
+                        numMips > 6 ? (rwSupport ? this.internalResourcesBindGroupLayout12RW! : this.internalResourcesBindGroupLayout12!) : this.internalResourcesBindGroupLayout,
                     ],
                 }),
             }),
@@ -980,7 +1022,7 @@ class DevicePipelines {
     }
 
 
-    private createMetaBindGroup(device: GPUDevice, meta: GPUDownsamplingMeta, halfPrecision: boolean): GPUBindGroup {
+    private createMetaBindGroup(device: GPUDevice, meta: GPUDownsamplingMeta, halfPrecision: boolean, readWriteSupport: boolean): GPUBindGroup {
         const metaBuffer = device.createBuffer({
             size: 16,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
@@ -992,29 +1034,49 @@ class DevicePipelines {
         ]));
         if (meta.numMips > 6) {
             const numArrayLayersForPrecision = halfPrecision ? Math.ceil(meta.numArrayLayers / 2) : meta.numArrayLayers;
-            return device.createBindGroup({
-                layout: this.internalResourcesBindGroupLayout12!,
-                entries: [
-                    {
-                        binding: 0,
-                        resource: {
-                            buffer: metaBuffer,
+            if (readWriteSupport) {
+                return device.createBindGroup({
+                    layout: this.internalResourcesBindGroupLayout12RW!,
+                    entries: [
+                        {
+                            binding: 0,
+                            resource: {
+                                buffer: metaBuffer,
+                            },
                         },
-                    },
-                    {
-                        binding: 1,
-                        resource: {
-                            buffer: this.getOrCreateAtomicCountersBuffer(device, numArrayLayersForPrecision),
+                        {
+                            binding: 1,
+                            resource: {
+                                buffer: this.getOrCreateAtomicCountersBuffer(device, numArrayLayersForPrecision),
+                            },
                         },
-                    },
-                    {
-                        binding: 2,
-                        resource: {
-                            buffer: this.getOrCreateMidMipBuffer(device, numArrayLayersForPrecision),
+                    ]
+                });
+            } else {
+                return device.createBindGroup({
+                    layout: this.internalResourcesBindGroupLayout12!,
+                    entries: [
+                        {
+                            binding: 0,
+                            resource: {
+                                buffer: metaBuffer,
+                            },
                         },
-                    },
-                ]
-            });
+                        {
+                            binding: 1,
+                            resource: {
+                                buffer: this.getOrCreateAtomicCountersBuffer(device, numArrayLayersForPrecision),
+                            },
+                        },
+                        {
+                            binding: 2,
+                            resource: {
+                                buffer: this.getOrCreateMidMipBuffer(device, numArrayLayersForPrecision),
+                            },
+                        },
+                    ]
+                });
+            }
         } else {
             return device.createBindGroup({
                 layout: this.internalResourcesBindGroupLayout,
@@ -1033,6 +1095,8 @@ class DevicePipelines {
         if (!device) {
             return undefined;
         }
+
+        const rwSupport = this.supportsReadWrite(target.format);
 
         const passes = [];
         for (let baseArrayLayer = 0; baseArrayLayer < target.depthOrArrayLayers; baseArrayLayer += this.maxArrayLayers) {
@@ -1055,6 +1119,7 @@ class DevicePipelines {
                         numArrayLayers: numArrayLayersThisPass,
                     },
                     scalarType === SPDScalarType.F16,
+                    rwSupport,
                 );
 
                 // todo: handle missing pipeline
@@ -1117,7 +1182,7 @@ export class WebGPUSinglePassDownsampler {
     /**
      * The set of formats supported by WebGPU SPD.
      */
-    readonly supportedFormats: Set<string> = new Set([
+    static readonly supportedFormats: Set<string> = new Set([
         'rgba8unorm',
         'rgba8snorm',
         'rgba8uint',
@@ -1139,14 +1204,14 @@ export class WebGPUSinglePassDownsampler {
     /**
      * The set of additionally supported formats supported if the feature 'bgra8unorm-storage' is enabled.
      */
-    readonly supportedFormatsBgra8UnormStorage: Set<string> = new Set([
+    static readonly supportedFormatsBgra8UnormStorage: Set<string> = new Set([
         'bgra8unorm',
     ]);
 
     /**
      * The set of additionally supported formats if the feature 'texture-formats-tier1' is enabled.
      */
-    readonly supportedFormatsTier1: Set<string> = new Set([
+    static readonly supportedFormatsTier1: Set<string> = new Set([
         'r8unorm',
         'r8snorm',
         'r8uint',
@@ -1170,6 +1235,36 @@ export class WebGPUSinglePassDownsampler {
         'rgb10a2uint',
         'rgb10a2unorm',
         'rg11b10ufloat',
+    ]);
+
+    /**
+     * The set of formats that support read-write access.
+     */
+    static readonly supportedReadWriteFormats: Set<string> = new Set([
+        'r32uint',
+        'r32sint',
+        'r32float',
+    ]);
+
+    /**
+     * The set of formats that support read-write access if the feature 'texture-formats-tier2' is enabled.
+     */
+    static readonly supportedReadWriteFormatsTier2: Set<string> = new Set([
+        'r8unorm',
+        'r8uint',
+        'r8sint',
+        'rgba8unorm',
+        'rgba8uint',
+        'rgba8sint',
+        'r16uint',
+        'r16sint',
+        'r16float',
+        'rgba16uint',
+        'rgba16sint',
+        'rgba16float',
+        'rgba32uint',
+        'rgba32sint',
+        'rgba32float',
     ]);
 
     /**
@@ -1292,11 +1387,11 @@ export class WebGPUSinglePassDownsampler {
             console.warn(`[WebGPUSinglePassDownsampler::prepare]: no mips to create (numMips = ${numMips})`);
             return undefined;
         }
-        if (!(this.supportedFormats.has(target.format) ||
-            (device.features.has('bgra8unorm-storage') && this.supportedFormatsBgra8UnormStorage.has(target.format)) ||
-            ((device.features.has('texture-formats-tier1') || device.features.has('texture-formats-tier2')) && this.supportedFormatsTier1.has(target.format))))
+        if (!(WebGPUSinglePassDownsampler.supportedFormats.has(target.format) ||
+            (device.features.has('bgra8unorm-storage') && WebGPUSinglePassDownsampler.supportedFormatsBgra8UnormStorage.has(target.format)) ||
+            ((device.features.has('texture-formats-tier1') || device.features.has('texture-formats-tier2')) && WebGPUSinglePassDownsampler.supportedFormatsTier1.has(target.format))))
         {
-            throw new Error(`[WebGPUSinglePassDownsampler::prepare]: format ${target.format} not supported. (Supported formats: ${this.supportedFormats}, and ${this.supportedFormatsBgra8UnormStorage} (if 'bgra8unorm-storage' is enabled), and ${this.supportedFormatsTier1} (if 'texture-formats-tier1' is enabled))`);
+            throw new Error(`[WebGPUSinglePassDownsampler::prepare]: format ${target.format} not supported. (Supported formats: ${WebGPUSinglePassDownsampler.supportedFormats}, and ${WebGPUSinglePassDownsampler.supportedFormatsBgra8UnormStorage} (if 'bgra8unorm-storage' is enabled), and ${WebGPUSinglePassDownsampler.supportedFormatsTier1} (if 'texture-formats-tier1' is enabled))`);
         }
         if (target.format === 'bgra8unorm' && !device.features.has('bgra8unorm-storage')) {
             throw new Error(`[WebGPUSinglePassDownsampler::prepare]: format ${target.format} not supported without feature 'bgra8unorm-storage' enabled`);
