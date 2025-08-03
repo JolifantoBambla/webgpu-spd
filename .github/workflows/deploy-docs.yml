@@ -44,7 +44,10 @@ jobs:
           npm install webgpu-spd@1.0.0
           cp -r node_modules/webgpu-spd/dist docs/1.0.0/dist
           mkdir -p docs/2.x
-          cp -r dist docs/2.x/dist
+          npm install webgpu-spd@2.0.1
+          cp -r node_modules/webgpu-spd/dist docs/2.x/dist
+          mkdir -p docs/3.x
+          cp -r dist docs/3.x/dist
           cp -r demo docs/demo
       - name: Setup Pages
         uses: actions/configure-pages@v5
